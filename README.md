@@ -34,9 +34,9 @@ You will need Bun and a working Rust toolchain. The desktop-specific setup notes
 
 ## Screenshots
 
-![Claw Quest full window](docs/screenshots/claw-quest-window.png)
+![Claw Quest full window](Screenshot%202026-03-19%20120601.png)
 
-![Claw Quest adventurer and loadout detail](docs/screenshots/claw-quest-adventurer.png)
+![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
 
 ## Shipping it
 
