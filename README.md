@@ -9,6 +9,8 @@
 
 <p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a desktop front end for OpenClaw that turns skill management into a little RPG loadout screen instead of a pile of shell commands.</em></p>
 
+![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
+
 ## What this is
 
 Claw Quest is a Windows-first desktop companion for OpenClaw. It auto-detects an OpenClaw workspace, shows installed skills as equipment around a character, lets you browse and drag in new skills from ClawHub, and sends prompts back through OpenClaw from the same screen.
@@ -28,6 +30,15 @@ Right now Claw Quest is aimed at people who already use OpenClaw and want a desk
 
 Skill install and remove are still host-filesystem operations, so Docker users should bind-mount the same workspace and skills directory that the app can see.
 
+## Prerequisites
+
+Before you try to build Claw Quest, you should have:
+
+- [Bun](https://bun.sh/)
+- a working Rust toolchain with Cargo
+- the Windows build prerequisites needed by Tauri
+- an OpenClaw setup the app can talk to, whether that is a local install, a reachable Gateway, or a Docker container with a shared workspace
+
 ## Quick start
 
 From the repo root:
@@ -44,10 +55,6 @@ bun run desktop:build
 ```
 
 You will need Bun and a working Rust toolchain. Desktop-specific setup notes live in [`desktop/README.md`](desktop/README.md).
-
-## Screenshot
-
-![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
 
 ## Releases and source
 
