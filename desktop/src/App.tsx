@@ -3228,10 +3228,6 @@ function classFlavorPrefix(agentClass: AgentClass, summary: string) {
   }
 }
 
-function normalizeDisplayPath(value: string) {
-  return value.replace(/^\\\\\?\\/, '')
-}
-
 function leafName(path?: string | null) {
   if (!path) {
     return ''
