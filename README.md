@@ -49,12 +49,6 @@ You will need Bun and a working Rust toolchain. Desktop-specific setup notes liv
 
 ![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
 
-## Why this README changed
-
-Most OpenClaw tool READMEs do a few things well: they explain what the tool is for, who it is for, how to install it, how it fits into a running OpenClaw setup, and what the operational constraints are. I used that as the bar here, mainly comparing against [openclaw/openclaw](https://github.com/openclaw/openclaw), [openclaw-supermemory](https://github.com/supermemoryai/openclaw-supermemory), and [nix-openclaw](https://github.com/openclaw/nix-openclaw).
-
-Claw Quest was missing some of that framing, so this README now puts more weight on scope, setup, and how the app actually talks to OpenClaw instead of just listing features.
-
 ## Releases and source
 
 The repo should contain the source, assets, docs, and lockfiles needed to recreate the app. Built `.exe`, `.msi`, installer bundles, and `desktop/src-tauri/target/` should stay out of git and be published through GitHub Releases or another download host instead.
