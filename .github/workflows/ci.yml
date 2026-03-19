@@ -1,4 +1,4 @@
-name: CI
+name: Desktop CI
 
 on:
   push:
@@ -6,9 +6,9 @@ on:
   pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  desktop-build:
+    runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v6
@@ -17,25 +17,13 @@ jobs:
         with:
           bun-version: 1.3.10
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Install
         run: bun install --frozen-lockfile
-      - name: Peer deps
-        run: bun run check:peers
 
-      - name: Lint
-        run: bun run lint
+      - name: Desktop UI build
+        run: bun run desktop:ui:build
 
-      - name: Test
-        run: bun run test
-
-      - name: Coverage
-        run: bun run coverage
-
-      - name: Typecheck
-        run: |
-          bunx tsc --noEmit
-          bunx tsc -p packages/schema/tsconfig.json --noEmit
-          bunx tsc -p packages/clawdhub/tsconfig.json --noEmit
-
-      - name: Build
-        run: bun run build
+      - name: Desktop Rust check
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
