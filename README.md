@@ -7,15 +7,28 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest turns an OpenClaw agent into a little pixel hero, lets you outfit that hero with installed skills, and gives the whole workflow the feeling of a fantasy armory instead of a terminal full of incantations.</em></p>
+<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a desktop front end for OpenClaw that turns skill management into a little RPG loadout screen instead of a pile of shell commands.</em></p>
 
-## Claw Quest
+## What this is
 
-Claw Quest is a desktop companion for OpenClaw built with Bun, React, Vite, Tauri, and Rust. It watches your skill loadout, lets you browse and install skills through a game-like market, and sends quest prompts back through OpenClaw from the same screen. The goal is simple: make managing an agent feel playful without hiding the real tools underneath.
+Claw Quest is a Windows-first desktop companion for OpenClaw. It auto-detects an OpenClaw workspace, shows installed skills as equipment around a character, lets you browse and drag in new skills from ClawHub, and sends prompts back through OpenClaw from the same screen.
 
-This repository also still contains the original ClawHub registry and web app. The desktop layer sits on top of that work rather than replacing it, so the repo now carries both the fantasy-themed desktop manager and the underlying registry code.
+The point is not to replace OpenClaw. The point is to sit beside it and make a few common tasks feel much better:
 
-## Run it locally
+- browse what is installed
+- search the registry and install or remove skills
+- see rough security state for installed skills
+- send a prompt to your agent without leaving the app
+
+This repository still contains the original ClawHub registry and web app as well. Claw Quest is the desktop layer on top of that existing codebase.
+
+## Current scope
+
+Right now Claw Quest is aimed at people who already use OpenClaw and want a desktop manager for it. The app works best when the Gateway is already running and the OpenClaw workspace is reachable from the host machine. Local OpenClaw installs are the smoothest path, but the app can also be pointed at a remote Gateway or a Docker-based setup.
+
+Skill install and remove are still host-filesystem operations, so Docker users should bind-mount the same workspace and skills directory that the app can see.
+
+## Quick start
 
 From the repo root:
 
@@ -24,23 +37,27 @@ bun install
 bun run desktop:dev
 ```
 
-To build a desktop release instead:
+To build a release executable instead:
 
 ```bash
 bun run desktop:build
 ```
 
-You will need Bun and a working Rust toolchain. The desktop-specific setup notes live in [`desktop/README.md`](desktop/README.md).
+You will need Bun and a working Rust toolchain. Desktop-specific setup notes live in [`desktop/README.md`](desktop/README.md).
 
-## Screenshots
-
-![Claw Quest full window](Screenshot%202026-03-19%20120601.png)
+## Screenshot
 
 ![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
 
-## Shipping it
+## Why this README changed
 
-The repo should contain the source, docs, assets, and lockfiles needed to recreate the app from source. Built `.exe`, `.msi`, installer bundles, and `desktop/src-tauri/target/` should stay out of git and be published through GitHub Releases or another download host instead.
+Most OpenClaw tool READMEs do a few things well: they explain what the tool is for, who it is for, how to install it, how it fits into a running OpenClaw setup, and what the operational constraints are. I used that as the bar here, mainly comparing against [openclaw/openclaw](https://github.com/openclaw/openclaw), [openclaw-supermemory](https://github.com/supermemoryai/openclaw-supermemory), and [nix-openclaw](https://github.com/openclaw/nix-openclaw).
+
+Claw Quest was missing some of that framing, so this README now puts more weight on scope, setup, and how the app actually talks to OpenClaw instead of just listing features.
+
+## Releases and source
+
+The repo should contain the source, assets, docs, and lockfiles needed to recreate the app. Built `.exe`, `.msi`, installer bundles, and `desktop/src-tauri/target/` should stay out of git and be published through GitHub Releases or another download host instead.
 
 ## Attributions
 
@@ -48,11 +65,9 @@ Credits for bundled fonts, sound tools, and other third-party materials live in 
 
 ## Roadmap
 
-Claw Quest starts with OpenClaw, but the long-term plan is to let the same desktop shell work with other agent managers too. The first targets are `RustClaw`, `TinyClaw`, and `ZeroClaw`.
+Claw Quest starts with OpenClaw, but the longer-term plan is to let the same desktop shell work with other agent managers too. The first targets are `RustClaw`, `TinyClaw`, and `ZeroClaw`.
 
-## ClawHub and docs
-
-If you are here for the original registry and web app, the rest of the repo is still intact:
+## More docs
 
 - [`desktop/README.md`](desktop/README.md)
 - [`docs/README.md`](docs/README.md)
