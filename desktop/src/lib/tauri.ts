@@ -69,6 +69,7 @@ export type InstalledSkill = {
 }
 
 export type ManagerState = {
+  agentName?: string | null
   resolvedWorkdir: string
   resolvedSkillsDir: string
   workspaceSource: string

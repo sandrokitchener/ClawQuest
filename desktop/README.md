@@ -74,6 +74,12 @@ Recommended practice:
 - document the build steps in the repo so anyone can recreate the app
 - distribute compiled installers through GitHub Releases or your own download host
 
+## Coming soon
+
+- support for agent managers beyond OpenClaw
+- early integration plans for `RustClaw`, `TinyClaw`, and `ZeroClaw`
+- a shared skill-management layer so the same playful UI can outfit more than one claw-based stack
+
 ## Connection modes
 
 Claw Quest supports three quest transport modes in `Build Settings`.

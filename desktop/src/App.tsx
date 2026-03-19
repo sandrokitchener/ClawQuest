@@ -123,6 +123,7 @@ const UI_SOUND_URLS: Record<UiSound, string> = {
 }
 
 const EMPTY_STATE: ManagerState = {
+  agentName: null,
   resolvedWorkdir: '',
   resolvedSkillsDir: '',
   workspaceSource: '',
@@ -653,6 +654,7 @@ export default function App() {
   const displayedAgentRace = debugRaceOverride ?? agentRace
   const classTheme = CLASS_THEMES[displayedAgentClass]
   const ClassIcon = classTheme.icon
+  const adventurerName = state.agentName?.trim() || 'Adventurer'
   const gearLoadout = resolveGearLoadout(state.installed, slotPreferences)
   const equippedCount = SLOT_ORDER.filter((slot) => gearLoadout.bySlot[slot]).length
   const progress = deriveAdventurerProgress(questsCompleted)
@@ -915,6 +917,7 @@ export default function App() {
   function handleToggleDockedMode() {
     const nextDocked = !isDocked
     setIsDocked(nextDocked)
+    setSettingsOpen(false)
     setNotice(nextDocked ? 'Docked mode enabled.' : 'Full layout restored.')
   }
 
@@ -1295,31 +1298,35 @@ export default function App() {
           </div>
 
           <div className="hud-stats">
-            <button className="pixel-button pixel-button-primary" disabled={busy} onClick={() => void handleRefresh()}>
-              {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-              Refresh
-            </button>
-            <div className="hud-settings">
-              <button
-                aria-expanded={settingsOpen}
-                aria-label="Open settings"
-                className={`pixel-settings-button ${settingsOpen ? 'pixel-settings-button-active' : ''}`}
-                onClick={handleToggleSettings}
-                title="Settings"
-                type="button"
-              >
-                <PixelCogIcon />
-              </button>
-
-              {settingsOpen ? (
-                <div className="settings-menu">
-                  <span className="settings-menu-title">Settings</span>
-                  <button className="pixel-button settings-menu-action" disabled={busy} onClick={handleResetLevel} type="button">
-                    Reset Level
+            {!isDocked ? (
+              <>
+                <button className="pixel-button pixel-button-primary" disabled={busy} onClick={() => void handleRefresh()}>
+                  {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                  Refresh
+                </button>
+                <div className="hud-settings">
+                  <button
+                    aria-expanded={settingsOpen}
+                    aria-label="Open settings"
+                    className={`pixel-settings-button ${settingsOpen ? 'pixel-settings-button-active' : ''}`}
+                    onClick={handleToggleSettings}
+                    title="Settings"
+                    type="button"
+                  >
+                    <PixelCogIcon />
                   </button>
+
+                  {settingsOpen ? (
+                    <div className="settings-menu">
+                      <span className="settings-menu-title">Settings</span>
+                      <button className="pixel-button settings-menu-action" disabled={busy} onClick={handleResetLevel} type="button">
+                        Reset Level
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
+              </>
+            ) : null}
             <button
               aria-label={isDocked ? 'Return to full layout' : 'Switch to docked layout'}
               className={`pixel-mode-button ${isDocked ? 'pixel-mode-button-active' : ''}`}
@@ -1385,7 +1392,6 @@ export default function App() {
                       <PixelMarketIcon size={22} />
                       <h2>Skill Market</h2>
                     </div>
-                    <p>Library stock</p>
                   </div>
                 </div>
 
@@ -1533,6 +1539,7 @@ export default function App() {
                     <span className="class-card-kicker">Adventurer</span>
                     <span className="mini-chip class-level-chip">Lv. {progress.level}</span>
                   </div>
+                  <div className="class-card-name">{adventurerName}</div>
                   <div className="class-card-head">
                     <ClassIcon size={18} />
                     <strong>
@@ -2540,6 +2547,7 @@ function buildPreviewManagerState(
   }
 
   return {
+    agentName: 'OpenClaw Agent',
     resolvedWorkdir: workdir,
     resolvedSkillsDir: skillsDir,
     workspaceSource: draft.openclawPath ? 'manual override' : 'preview auto-find',

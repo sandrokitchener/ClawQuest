@@ -104,6 +104,7 @@ pub struct InstalledSkill {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagerState {
+  pub agent_name: Option<String>,
   pub resolved_workdir: String,
   pub resolved_skills_dir: String,
   pub workspace_source: String,
@@ -975,6 +976,7 @@ async fn select_gateway_runner(
 
 async fn build_manager_state(config: &ResolvedManagerConfig) -> Result<ManagerState, String> {
   Ok(ManagerState {
+    agent_name: detect_default_agent_name(),
     resolved_workdir: config.workdir.display().to_string(),
     resolved_skills_dir: config.skills_dir.display().to_string(),
     workspace_source: config.workspace_source.clone(),
@@ -2605,6 +2607,11 @@ fn detect_default_agent_id() -> Option<String> {
     .or_else(|| resolve_default_agent_id_from_config(clawdbot_config_path()))
 }
 
+fn detect_default_agent_name() -> Option<String> {
+  resolve_default_agent_name_from_config(openclaw_config_path())
+    .or_else(|| resolve_default_agent_name_from_config(clawdbot_config_path()))
+}
+
 fn resolve_workspace_from_config(path: PathBuf) -> Option<PathBuf> {
   let config = read_json5_file::<RuntimeWorkspaceConfig>(&path)?;
   let default_workspace = clean_string(
@@ -2662,6 +2669,74 @@ fn resolve_default_agent_id_from_config(path: PathBuf) -> Option<String> {
   }
 
   None
+}
+
+fn resolve_default_agent_name_from_config(path: PathBuf) -> Option<String> {
+  let config = read_json5_file::<RuntimeWorkspaceConfig>(&path)?;
+  let entries = config
+    .agents
+    .as_ref()
+    .and_then(|item| item.list.as_ref());
+
+  let preferred = entries.and_then(|items| {
+    items
+      .iter()
+      .find(|entry| entry.default.unwrap_or(false))
+      .or_else(|| items.iter().find(|entry| entry.id.as_deref() == Some("main")))
+  });
+
+  if let Some(name) = preferred.and_then(|entry| clean_string(entry.name.as_ref())) {
+    return Some(name);
+  }
+
+  if let Some(agent_id) = preferred.and_then(|entry| clean_string(entry.id.as_ref())) {
+    return Some(format_agent_display_name(&agent_id));
+  }
+
+  if let Some(routing) = config.routing.as_ref().and_then(|item| item.agents.as_ref()) {
+    if let Some(main) = routing.get("main") {
+      if let Some(name) = clean_string(main.name.as_ref()) {
+        return Some(name);
+      }
+
+      return Some(format_agent_display_name("main"));
+    }
+
+    if let Some((agent_id, entry)) = routing.iter().next() {
+      if let Some(name) = clean_string(entry.name.as_ref()) {
+        return Some(name);
+      }
+
+      if let Some(cleaned) = clean_inline_string(agent_id) {
+        return Some(format_agent_display_name(&cleaned));
+      }
+    }
+  }
+
+  None
+}
+
+fn format_agent_display_name(raw: &str) -> String {
+  let mut words = Vec::new();
+  for chunk in raw.split(|character: char| matches!(character, '-' | '_' | '.')) {
+    let trimmed = chunk.trim();
+    if trimmed.is_empty() {
+      continue;
+    }
+
+    let mut chars = trimmed.chars();
+    if let Some(first) = chars.next() {
+      let mut word = first.to_uppercase().collect::<String>();
+      word.push_str(&chars.as_str().to_lowercase());
+      words.push(word);
+    }
+  }
+
+  if words.is_empty() {
+    "Adventurer".to_string()
+  } else {
+    words.join(" ")
+  }
 }
 
 fn clawdbot_state_dir() -> PathBuf {

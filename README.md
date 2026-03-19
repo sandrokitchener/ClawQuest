@@ -60,6 +60,12 @@ Best practice is to push the **source** for Claw Quest and leave compiled output
 
 Desktop sound effects were made with [Bfxr](https://www.bfxr.net/).
 
+### Coming soon
+
+- support for other agent managers beyond OpenClaw
+- integration experiments for `RustClaw`, `TinyClaw`, and `ZeroClaw`
+- a broader cross-manager skill armory so Claw Quest can grow into a shared fantasy control panel for different claw stacks
+
 ## ClawHub registry
 
 ClawHub is the **public skill registry for Clawdbot**: publish, version, and search text-based agent skills (a `SKILL.md` plus supporting files). It is designed for fast browsing, a CLI-friendly API, moderation hooks, and vector search.
