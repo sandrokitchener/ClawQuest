@@ -1,10 +1,9 @@
-# Contributing to ClawHub
+# Contributing to Claw Quest
 
-Welcome! ClawHub is the public skill registry for [OpenClaw](https://github.com/openclaw/openclaw). We appreciate bug fixes, documentation improvements, and feature contributions.
+Welcome. We appreciate bug fixes, documentation improvements, UI polish, and feature contributions.
 
-- **Questions?** Ask in [#clawhub on Discord](https://discord.gg/clawd).
-- **Bug fixes** — PRs are welcome.
-- **New features or architectural changes** — please start with a Discord conversation in #clawhub first so we can align on scope.
+- **Bug fixes**: PRs are welcome.
+- **New features or architectural changes**: please open an issue or draft PR first so the direction is visible early.
 
 ## Local Development Setup
 
@@ -41,7 +40,7 @@ CONVEX_DEPLOYMENT=anonymous:anonymous-clawhub
 
 ### Run the Convex backend
 
-Start the local Convex backend first — other setup steps depend on it:
+Start the local Convex backend first - other setup steps depend on it:
 
 ```bash
 bunx convex dev --typecheck=disable
@@ -143,7 +142,7 @@ These are the same checks that run in CI (`.github/workflows/ci.yml`).
 
 **PR guidelines:**
 
-- Keep PRs focused — one concern per PR.
+- Keep PRs focused - one concern per PR.
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `chore:`, `docs:`, etc.
 - Include test commands and screenshots for UI changes.
 - Write a clear description of what changed and why.
@@ -170,11 +169,11 @@ See [`docs/security.md`](docs/security.md) for moderation and upload gating deta
 ## Reading Order for New Contributors
 
 1. This file (local setup)
-2. [`docs/quickstart.md`](docs/quickstart.md) — end-to-end workflows
-3. [`docs/architecture.md`](docs/architecture.md) — system design
-4. [`docs/skill-format.md`](docs/skill-format.md) — skill structure
-5. [`docs/cli.md`](docs/cli.md) — CLI reference
-6. [`docs/http-api.md`](docs/http-api.md) — HTTP endpoints
-7. [`docs/auth.md`](docs/auth.md) — authentication
-8. [`docs/deploy.md`](docs/deploy.md) — deployment
-9. [`docs/troubleshooting.md`](docs/troubleshooting.md) — common issues
+2. [`docs/quickstart.md`](docs/quickstart.md) - end-to-end workflows
+3. [`docs/architecture.md`](docs/architecture.md) - system design
+4. [`docs/skill-format.md`](docs/skill-format.md) - skill structure
+5. [`docs/cli.md`](docs/cli.md) - CLI reference
+6. [`docs/http-api.md`](docs/http-api.md) - HTTP endpoints
+7. [`docs/auth.md`](docs/auth.md) - authentication
+8. [`docs/deploy.md`](docs/deploy.md) - deployment
+9. [`docs/troubleshooting.md`](docs/troubleshooting.md) - common issues

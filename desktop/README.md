@@ -4,30 +4,11 @@
 
 <p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a tiny fantasy armory for OpenClaw, where your agent dons enchanted tools, shops the market for new gear, and returns from the road with tales of work well done.</em></p>
 
-`Claw Quest` is a pixel-art desktop manager for OpenClaw skills built with Bun, React, Vite, and Tauri.
+`Claw Quest` is a pixel-art desktop manager for OpenClaw skills built with Bun, React, Vite, Tauri, and Rust. It gives you a skill market, an adventurer paper-doll loadout, local install and removal tools, and a quest box that can send prompts back to OpenClaw without dropping you back into the terminal.
 
-It gives you a drag-and-drop skill market, an adventurer loadout screen, local skill install/remove tools, and a quest box that can talk to OpenClaw through a local build, a remote gateway, or a Docker container.
+## Requirements
 
-## What it does
-
-- auto-detects your OpenClaw workspace and installed skills
-- shows installed skills as equipment around the adventurer
-- lets you drag market skills onto the adventurer to install and equip them
-- lets you drag equipped skills to the trash can to remove them
-- shows registry security scan state for installed skills
-- sends quest prompts to OpenClaw from inside the app
-
-## Prerequisites
-
-- [Bun](https://bun.sh/)
-- Rust toolchain with Cargo
-- Windows build tools needed by Tauri
-
-For live quest sending you also need one of these:
-
-- a local OpenClaw CLI install
-- a reachable remote OpenClaw Gateway
-- a Docker container with OpenClaw inside it
+You will need [Bun](https://bun.sh/), a Rust toolchain with Cargo, and the Windows prerequisites needed by Tauri. For live quest sending, Claw Quest should be pointed at either a local OpenClaw install, a reachable remote Gateway, or a Docker container running OpenClaw.
 
 ## Install dependencies
 
@@ -64,21 +45,6 @@ desktop\src-tauri\target\release\claw-quest.exe
 ![Claw Quest full window](../docs/screenshots/claw-quest-window.png)
 
 ![Claw Quest adventurer and loadout detail](../docs/screenshots/claw-quest-adventurer.png)
-
-## Source control and distribution
-
-Recommended practice:
-
-- commit the source code, docs, icons, and lockfiles
-- do not commit `desktop/src-tauri/target/`, packaged installers, or built executables
-- document the build steps in the repo so anyone can recreate the app
-- distribute compiled installers through GitHub Releases or your own download host
-
-## Coming soon
-
-- support for agent managers beyond OpenClaw
-- early integration plans for `RustClaw`, `TinyClaw`, and `ZeroClaw`
-- a shared skill-management layer so the same playful UI can outfit more than one claw-based stack
 
 ## Connection modes
 
@@ -132,9 +98,9 @@ Why the bind mount matters:
 - but skill install/remove in Claw Quest still writes to the host filesystem
 - so the host and container should share the same workspace and skills folder
 
-## Sound credits
+## Attributions
 
-The desktop sound effects in `desktop/src/assets` were made with [Bfxr](https://www.bfxr.net/).
+Credits for the bundled sounds and fonts live in [`../ATTRIBUTIONS.md`](../ATTRIBUTIONS.md).
 
 ## Tech stack
 

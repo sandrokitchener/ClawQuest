@@ -4,123 +4,58 @@
 
 <p align="center">
   <a href="https://github.com/sandrokitchener/ClawQuest/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/sandrokitchener/ClawQuest/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
-  <a href="https://discord.gg/clawd"><img src="https://img.shields.io/discord/1456350064065904867?label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a playful desktop companion for OpenClaw, where your agent becomes a little pixel hero, your tools become enchanted gear, and each prompt becomes a call to adventure.</em></p>
+<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest turns an OpenClaw agent into a little pixel hero, lets you outfit that hero with installed skills, and gives the whole workflow the feeling of a fantasy armory instead of a terminal full of incantations.</em></p>
 
-<p align="center">
-  <a href="desktop/README.md">Desktop Setup</a> |
-  <a href="#claw-quest-desktop-app">Claw Quest</a> |
-  <a href="#clawhub-registry">ClawHub Registry</a> |
-  <a href="docs/README.md">Docs</a> |
-  <a href="CONTRIBUTING.md">Contributing</a> |
-  <a href="https://discord.gg/clawd">Discord</a>
-</p>
+## Claw Quest
 
-## Claw Quest desktop app
+Claw Quest is a desktop companion for OpenClaw built with Bun, React, Vite, Tauri, and Rust. It watches your skill loadout, lets you browse and install skills through a game-like market, and sends quest prompts back through OpenClaw from the same screen. The goal is simple: make managing an agent feel playful without hiding the real tools underneath.
 
-This repo includes **Claw Quest**, a Bun + React + Vite + Tauri desktop manager for OpenClaw skills.
+This repository also still contains the original ClawHub registry and web app. The desktop layer sits on top of that work rather than replacing it, so the repo now carries both the fantasy-themed desktop manager and the underlying registry code.
 
-It gives you:
+## Run it locally
 
-- a drag-and-drop skill market
-- an RPG-style equipment and loadout screen for installed skills
-- local install and removal management
-- quest sending through a local build, remote gateway, or Docker container
-
-Quick start from the repo root:
+From the repo root:
 
 ```bash
 bun install
 bun run desktop:dev
-# or
+```
+
+To build a desktop release instead:
+
+```bash
 bun run desktop:build
 ```
 
-Desktop builds require Rust in addition to Bun.
+You will need Bun and a working Rust toolchain. The desktop-specific setup notes live in [`desktop/README.md`](desktop/README.md).
 
-Full setup notes live in [`desktop/README.md`](desktop/README.md), including local, remote gateway, and Docker connection guidance.
-
-### Screenshots
+## Screenshots
 
 ![Claw Quest full window](docs/screenshots/claw-quest-window.png)
 
 ![Claw Quest adventurer and loadout detail](docs/screenshots/claw-quest-adventurer.png)
 
-### Source control and releases
+## Shipping it
 
-Best practice is to push the **source** for Claw Quest and leave compiled output out of git:
+The repo should contain the source, docs, assets, and lockfiles needed to recreate the app from source. Built `.exe`, `.msi`, installer bundles, and `desktop/src-tauri/target/` should stay out of git and be published through GitHub Releases or another download host instead.
 
-- commit source, docs, icons, config, and lockfiles
-- do not commit `desktop/src-tauri/target/`, packaged installers, or built `.exe` files
-- publish installers and executables through GitHub Releases, itch.io, or another download host
-- keep the README focused on setup and build steps so anyone can recreate a verified build from source
+## Attributions
 
-Desktop sound effects were made with [Bfxr](https://www.bfxr.net/).
+Credits for bundled fonts, sound tools, and other third-party materials live in [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
 
-### Coming soon
+## Roadmap
 
-- support for other agent managers beyond OpenClaw
-- integration experiments for `RustClaw`, `TinyClaw`, and `ZeroClaw`
-- a broader cross-manager skill armory so Claw Quest can grow into a shared fantasy control panel for different claw stacks
+Claw Quest starts with OpenClaw, but the long-term plan is to let the same desktop shell work with other agent managers too. The first targets are `RustClaw`, `TinyClaw`, and `ZeroClaw`.
 
-## ClawHub registry
+## ClawHub and docs
 
-ClawHub is the **public skill registry for Clawdbot**: publish, version, and search text-based agent skills (a `SKILL.md` plus supporting files). It is designed for fast browsing, a CLI-friendly API, moderation hooks, and vector search.
+If you are here for the original registry and web app, the rest of the repo is still intact:
 
-onlycrabs.ai is the **SOUL.md registry**: publish and share system lore the same way you publish skills.
-
-## What you can do with it
-
-- browse skills and render their `SKILL.md`
-- publish new skill versions with changelogs and tags
-- rename or merge owned skills without breaking installs
-- browse and publish souls with `SOUL.md`
-- search with embeddings instead of brittle keyword matching
-- star and comment, with moderation and approval tools for admins and moderators
-
-## How it works
-
-- web app: TanStack Start (React, Vite/Nitro)
-- backend: Convex + Convex Auth
-- search: OpenAI embeddings (`text-embedding-3-small`) + Convex vector search
-- API schema and routes: `packages/schema`
-
-## CLI
-
-Common CLI flows:
-
-- auth: `clawhub login`, `clawhub whoami`
-- discover: `clawhub search ...`, `clawhub explore`
-- manage local installs: `clawhub install <slug>`, `clawhub uninstall <slug>`, `clawhub list`, `clawhub update --all`
-- inspect without installing: `clawhub inspect <slug>`
-- publish and sync: `clawhub publish <path>`, `clawhub sync`
-- canonicalize owned skills: `clawhub skill rename <slug> <new-slug>`, `clawhub skill merge <source> <target>`
-
-Docs: [`docs/quickstart.md`](docs/quickstart.md), [`docs/cli.md`](docs/cli.md).
-
-## Local dev
-
-Prereqs: [Bun](https://bun.sh/).
-
-```bash
-bun install
-cp .env.local.example .env.local
-# edit .env.local
-
-# terminal A
-bunx convex dev
-
-# terminal B
-bun run dev
-```
-
-For full setup instructions, see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Docs
-
-- [`docs/README.md`](docs/README.md)
-- [`docs/spec.md`](docs/spec.md)
 - [`desktop/README.md`](desktop/README.md)
+- [`docs/README.md`](docs/README.md)
+- [`docs/quickstart.md`](docs/quickstart.md)
+- [`docs/cli.md`](docs/cli.md)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
