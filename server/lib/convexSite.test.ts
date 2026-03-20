@@ -47,7 +47,7 @@ describe('convex site helpers', () => {
     ).toBe('https://private.example.convex.site/api/v1/search?q=patch')
   })
 
-  it('falls back to the site URL or request host for server-side metadata fetches', () => {
+  it('falls back to the site URL, loopback request host, or the canonical origin', () => {
     expect(
       getServerApiBase('https://clawhub.ai', {
         env: { SITE_URL: 'https://site.example.com/app' },
@@ -57,8 +57,15 @@ describe('convex site helpers', () => {
     expect(
       getServerApiBase('https://clawhub.ai', {
         env: {},
+        eventHost: '127.0.0.1:3000',
+      }),
+    ).toBe('https://127.0.0.1:3000')
+
+    expect(
+      getServerApiBase('https://clawhub.ai', {
+        env: {},
         eventHost: 'preview.clawhub.ai',
       }),
-    ).toBe('https://preview.clawhub.ai')
+    ).toBe('https://clawhub.ai')
   })
 })

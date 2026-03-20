@@ -24,6 +24,18 @@ function isLoopbackHostname(hostname: string) {
   return LOOPBACK_HOSTNAMES.has(hostname.toLowerCase())
 }
 
+function normalizeLoopbackEventOrigin(value?: string | null) {
+  const trimmed = trimEnv(value)
+  if (!trimmed) return null
+
+  try {
+    const origin = new URL(`https://${trimmed}`).origin
+    return isLoopbackHostname(new URL(origin).hostname) ? origin : null
+  } catch {
+    return null
+  }
+}
+
 export function isSecureConvexOrigin(value: string) {
   const url = new URL(value)
   return url.protocol === 'https:' || isLoopbackHostname(url.hostname)
@@ -64,6 +76,7 @@ export function getServerApiBase(
     getConfiguredConvexSiteOrigin(env) ??
     normalizeOrigin(env.SITE_URL) ??
     normalizeOrigin(env.VITE_SITE_URL) ??
-    (trimEnv(options.eventHost) ? `https://${options.eventHost!.trim()}` : fallbackOrigin)
+    normalizeLoopbackEventOrigin(options.eventHost) ??
+    fallbackOrigin
   )
 }
