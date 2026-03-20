@@ -1416,7 +1416,7 @@ export default function App() {
     >
       <section className={`game-screen ${isDocked ? 'game-screen-docked' : ''}`}>
         <header className="hud-bar">
-          <div className="hud-brand" data-tauri-drag-region={isDocked ? '' : undefined} title={isDocked ? 'Drag window' : undefined}>
+          <div className="hud-brand" data-tauri-drag-region="" title="Drag window">
             <div className="brand-copy">
               <ClawQuestWordmark />
               <span>{runtime ? 'Desktop skill manager' : 'Browser preview'}</span>

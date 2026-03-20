@@ -181,6 +181,13 @@ select {
   display: grid;
   justify-items: center;
   margin: 0 auto;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.hud-brand:active {
+  cursor: grabbing;
 }
 
 .brand-copy {
@@ -518,12 +525,7 @@ select {
 }
 
 .pixel-shell-docked .hud-brand {
-  cursor: grab;
   max-width: calc(100% - 92px);
-}
-
-.pixel-shell-docked .hud-brand:active {
-  cursor: grabbing;
 }
 
 .pixel-shell-docked .brand-wordmark {
