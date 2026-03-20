@@ -8,20 +8,20 @@
 
 <p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a desktop front end for OpenClaw that turns skill management into a little RPG loadout screen instead of a pile of shell commands.</em></p>
 
-![Claw Quest adventurer and loadout detail](Screenshot%202026-03-19%20120742.png)
+![Claw Quest desktop window](docs/screenshots/claw-quest-window.png)
 
-## What this is
+## Desktop-first repo
 
-Claw Quest is a Windows-first desktop companion for OpenClaw. It auto-detects an OpenClaw workspace, shows installed skills as equipment around a character, lets you browse and drag in new skills from ClawHub, and sends prompts back through OpenClaw from the same screen.
+Claw Quest is a Windows-first desktop companion for OpenClaw. It auto-detects an OpenClaw workspace, shows installed skills as equipment around a character, lets you browse and install skills from ClawHub, and sends prompts back through OpenClaw from the same screen.
 
-The point is not to replace OpenClaw. The point is to sit beside it and make a few common tasks feel much better:
+This repository still contains the supporting ClawHub and registry code that the desktop app talks to, but the primary product in this repo right now is the Tauri desktop app in [`desktop/`](desktop/).
+
+The point is not to replace OpenClaw. The point is to sit beside it and make a few common tasks feel better:
 
 - browse what is installed
 - search the registry and install or remove skills
 - see rough security state for installed skills
 - send a prompt to your agent without leaving the app
-
-This repository still contains the original ClawHub registry and web app as well. Claw Quest is the desktop layer on top of that existing codebase.
 
 ## Current scope
 
@@ -47,13 +47,44 @@ bun install
 bun run desktop:dev
 ```
 
-To build a release executable instead:
+This launches the Tauri desktop app in development mode.
+
+## Build the desktop app
+
+From the repo root:
 
 ```bash
 bun run desktop:build
 ```
 
-You will need Bun and a working Rust toolchain. Desktop-specific setup notes live in [`desktop/README.md`](desktop/README.md).
+That runs a full Tauri production build. If you only want the direct Windows executable without installer bundles:
+
+```bash
+cd desktop
+bunx tauri build --no-bundle
+```
+
+The direct executable ends up at:
+
+```text
+desktop\src-tauri\target\release\claw-quest.exe
+```
+
+## Useful commands
+
+From the repo root:
+
+```bash
+bun run desktop:ui:dev
+bun run desktop:ui:build
+bun run desktop:check
+```
+
+- `desktop:ui:dev` runs the Vite UI only
+- `desktop:ui:build` builds the desktop frontend only
+- `desktop:check` runs the desktop TypeScript and Rust checks
+
+Desktop-specific setup and connection-mode notes live in [`desktop/README.md`](desktop/README.md).
 
 ## Releases and source
 
@@ -62,10 +93,6 @@ The repo should contain the source, assets, docs, and lockfiles needed to recrea
 ## Attributions
 
 Credits for bundled fonts, sound tools, and other third-party materials live in [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
-
-## Roadmap
-
-Claw Quest starts with OpenClaw, but the longer-term plan is to let the same desktop shell work with other agent managers too. The first targets are `RustClaw`, `TinyClaw`, and `ZeroClaw`.
 
 ## More docs
 

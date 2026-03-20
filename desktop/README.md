@@ -34,10 +34,27 @@ From the repo root:
 bun run desktop:build
 ```
 
-The built executable ends up in:
+That runs the full Tauri production build, including bundle targets.
+
+If you only want the direct executable without installer bundles:
+
+```bash
+cd desktop
+bunx tauri build --no-bundle
+```
+
+The direct executable ends up in:
 
 ```text
 desktop\src-tauri\target\release\claw-quest.exe
+```
+
+Useful extra commands from the repo root:
+
+```bash
+bun run desktop:ui:dev
+bun run desktop:ui:build
+bun run desktop:check
 ```
 
 ## Screenshots
