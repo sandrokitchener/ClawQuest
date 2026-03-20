@@ -21,6 +21,7 @@ import {
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
   browseRegistrySkills,
+  centerDesktopWindow,
   closeDesktopWindow,
   type ConnectionMode,
   installRegistrySkill,
@@ -154,6 +155,7 @@ const SLOT_STORAGE_KEY = 'claw-quest-slot-preferences-v1'
 const AGENT_RACE_STORAGE_KEY = 'claw-quest-adventurer-race-v1'
 const QUEST_PROGRESS_STORAGE_KEY = 'claw-quest-adventurer-progress-v1'
 const CONNECTION_SETTINGS_STORAGE_KEY = 'claw-quest-connection-settings-v1'
+const AUDIO_MUTED_STORAGE_KEY = 'claw-quest-audio-muted-v1'
 const DRAG_TRANSFER_KEY = 'application/x-claw-quest-skill'
 const AVATAR_SPEAKING_MS = 2600
 const CATALOG_SEARCH_DEBOUNCE_MS = 420
@@ -640,8 +642,9 @@ export default function App() {
   const [buildsOpen, setBuildsOpen] = useState(false)
   const [rootsOpen, setRootsOpen] = useState(false)
   const [slotPreferences, setSlotPreferences] = useState<SlotPreferenceMap>(() => readSlotPreferences())
-  const [agentRace] = useState<AgentRace>(() => readOrCreateAgentRace())
+  const [agentRace, setAgentRace] = useState<AgentRace>(() => readOrCreateAgentRace())
   const [questsCompleted, setQuestsCompleted] = useState(() => readQuestProgress())
+  const [audioMuted, setAudioMuted] = useState(() => readAudioMuted())
   const [isDocked, setIsDocked] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [questDraft, setQuestDraft] = useState('')
@@ -737,6 +740,10 @@ export default function App() {
   }, [slotPreferences])
 
   useEffect(() => {
+    writeAudioMuted(audioMuted)
+  }, [audioMuted])
+
+  useEffect(() => {
     const loaded: Partial<Record<UiSound, HTMLAudioElement>> = {}
     for (const [name, url] of Object.entries(UI_SOUND_URLS) as [UiSound, string][]) {
       const audio = new Audio(url)
@@ -824,6 +831,10 @@ export default function App() {
   }, [manualDrag])
 
   function playUiSound(sound: UiSound) {
+    if (audioMuted) {
+      return
+    }
+
     const template = soundRefs.current[sound]
     if (!template) {
       return
@@ -1049,11 +1060,39 @@ export default function App() {
   }
 
   function handleResetLevel() {
+    const nextRace = rerollAgentRace(agentRace)
     setQuestsCompleted(0)
+    setAgentRace(nextRace)
     writeQuestProgress(0)
     setSettingsOpen(false)
     playUiSound('blip')
-    setNotice('Adventurer progress reset to Lv. 1.')
+    setNotice(`Character progress reset to Lv. 1. New race: ${RACE_LABELS[nextRace]}.`)
+  }
+
+  function handleToggleAudioMuted() {
+    setAudioMuted((current) => {
+      const next = !current
+      setNotice(next ? 'Audio muted.' : 'Audio unmuted.')
+      return next
+    })
+    setSettingsOpen(false)
+  }
+
+  async function handleCenterWindow() {
+    setSettingsOpen(false)
+
+    if (!runtime) {
+      setNotice('Center window works in the desktop build.')
+      return
+    }
+
+    try {
+      await centerDesktopWindow()
+      playUiSound('blip')
+      setNotice('Window centered.')
+    } catch (caughtError) {
+      setError(normalizeCommandError(caughtError))
+    }
   }
 
   function triggerAvatarSpeaking() {
@@ -1445,8 +1484,14 @@ export default function App() {
                   {settingsOpen ? (
                     <div className="settings-menu">
                       <span className="settings-menu-title">Settings</span>
+                      <button className="pixel-button settings-menu-action" onClick={handleToggleAudioMuted} type="button">
+                        {audioMuted ? 'Unmute audio' : 'Mute audio'}
+                      </button>
+                      <button className="pixel-button settings-menu-action" onClick={() => void handleCenterWindow()} type="button">
+                        Center window
+                      </button>
                       <button className="pixel-button settings-menu-action" disabled={busy} onClick={handleResetLevel} type="button">
-                        Reset Level
+                        Reset character progress
                       </button>
                     </div>
                   ) : null}
@@ -3168,8 +3213,39 @@ function readOrCreateAgentRace(): AgentRace {
   }
 }
 
+function rerollAgentRace(currentRace?: AgentRace): AgentRace {
+  try {
+    const pool = AGENT_RACE_OPTIONS.filter((race) => race !== currentRace)
+    const nextRace = pool[Math.floor(Math.random() * pool.length)] ?? AGENT_RACE_OPTIONS[0] ?? 'human'
+    window.localStorage.setItem(AGENT_RACE_STORAGE_KEY, nextRace)
+    return nextRace
+  } catch {
+    return AGENT_RACE_OPTIONS.find((race) => race !== currentRace) ?? 'human'
+  }
+}
+
 function isAgentRace(value: string): value is AgentRace {
   return AGENT_RACE_OPTIONS.includes(value as AgentRace)
+}
+
+function readAudioMuted() {
+  try {
+    return window.localStorage.getItem(AUDIO_MUTED_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeAudioMuted(muted: boolean) {
+  try {
+    if (muted) {
+      window.localStorage.setItem(AUDIO_MUTED_STORAGE_KEY, '1')
+    } else {
+      window.localStorage.removeItem(AUDIO_MUTED_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore storage write issues in restricted environments.
+  }
 }
 
 function readQuestProgress() {

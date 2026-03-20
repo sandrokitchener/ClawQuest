@@ -174,7 +174,8 @@ select {
   padding: 16px 18px;
   background: var(--panel-2);
   position: relative;
-  z-index: 1;
+  z-index: 8;
+  overflow: visible;
 }
 
 .hud-brand {
@@ -248,10 +249,12 @@ select {
   right: 22px;
   top: 50%;
   transform: translateY(-50%);
+  z-index: 3;
 }
 
 .hud-settings {
   position: relative;
+  z-index: 4;
 }
 
 .pixel-close-button {
@@ -325,8 +328,8 @@ select {
   position: absolute;
   top: calc(100% + 12px);
   right: 0;
-  z-index: 6;
-  min-width: 190px;
+  z-index: 40;
+  min-width: 220px;
   display: grid;
   gap: 10px;
   padding: 14px;
@@ -347,6 +350,7 @@ select {
 
 .settings-menu-action {
   justify-content: center;
+  width: 100%;
 }
 
 .pixel-mode-button {

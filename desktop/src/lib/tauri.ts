@@ -194,6 +194,15 @@ export async function closeDesktopWindow() {
   await getCurrentWindow().close()
 }
 
+export async function centerDesktopWindow() {
+  if (!isTauriRuntime()) {
+    return
+  }
+
+  const { getCurrentWindow } = await import('@tauri-apps/api/window')
+  await getCurrentWindow().center()
+}
+
 export async function setDesktopWindowDocked(docked: boolean) {
   if (!isTauriRuntime()) {
     return
