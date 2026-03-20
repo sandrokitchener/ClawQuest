@@ -3,6 +3,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/sandrokitchener/ClawQuest/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sandrokitchener/ClawQuest/ci.yml?branch=main&style=for-the-badge&label=Desktop%20CI" alt="Desktop CI"></a>
+  <a href="https://github.com/sandrokitchener/ClawQuest/blob/main/desktop/package.json"><img src="https://img.shields.io/github/package-json/v/sandrokitchener/ClawQuest?filename=desktop%2Fpackage.json&style=for-the-badge&label=Desktop%20Version" alt="Desktop Version"></a>
+  <a href="https://github.com/sandrokitchener/ClawQuest/stargazers"><img src="https://img.shields.io/github/stars/sandrokitchener/ClawQuest?style=for-the-badge" alt="GitHub Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
@@ -86,6 +89,16 @@ bun run desktop:check
 
 Desktop-specific setup and connection-mode notes live in [`desktop/README.md`](desktop/README.md).
 
+## Build details
+
+The README badges above are live repo signals:
+
+- `Desktop CI` tracks the Windows GitHub Actions build for the Tauri app
+- `Desktop Version` is pulled from `desktop/package.json`
+- `GitHub Stars` shows how many people have starred the repo
+
+The desktop executable path and the local build commands above are still the source of truth if you are building from source.
+
 ## Releases and source
 
 The repo should contain the source, assets, docs, and lockfiles needed to recreate the app. Built `.exe`, `.msi`, installer bundles, and `desktop/src-tauri/target/` should stay out of git and be published through GitHub Releases or another download host instead.
@@ -93,6 +106,10 @@ The repo should contain the source, assets, docs, and lockfiles needed to recrea
 ## Attributions
 
 Credits for bundled fonts, sound tools, and other third-party materials live in [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=sandrokitchener/ClawQuest&type=date&legend=top-left)](https://www.star-history.com/#sandrokitchener/ClawQuest&type=Date)
 
 ## More docs
 
