@@ -49,7 +49,7 @@
 
 ## Configuration & Security
 - Local env: `.env.local` (never commit secrets).
-- Convex env holds JWT keys; Vercel only needs `VITE_CONVEX_URL` + `VITE_CONVEX_SITE_URL`.
+- Convex env holds JWT keys; Vercel should set `VITE_CONVEX_URL`, `VITE_CONVEX_SITE_URL`, and `CONVEX_SITE_URL` for the server-side `/api/*` proxy.
 - OAuth: GitHub OAuth App credentials required for login.
 
 ## Convex Ops (Gotchas)

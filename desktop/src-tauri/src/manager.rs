@@ -2992,7 +2992,29 @@ fn remove_path(path: &Path) -> Result<(), String> {
 
 async fn read_response_error(response: reqwest::Response) -> String {
   let status = response.status();
+  let retry_after_seconds = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    response
+      .headers()
+      .get(reqwest::header::RETRY_AFTER)
+      .and_then(|value| value.to_str().ok())
+      .and_then(|value| value.trim().parse::<u64>().ok())
+  } else {
+    None
+  };
   let text = response.text().await.unwrap_or_default();
+  if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    let detail = if text.trim().is_empty() {
+      "Rate limited by the registry.".to_string()
+    } else {
+      text.trim().to_string()
+    };
+
+    return match retry_after_seconds {
+      Some(seconds) if seconds > 0 => format!("{detail} Try again in {seconds}s."),
+      _ => format!("{detail} Try again shortly."),
+    };
+  }
+
   if text.trim().is_empty() {
     format!("Request failed with HTTP {status}")
   } else {

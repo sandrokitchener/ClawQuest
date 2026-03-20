@@ -1,5 +1,5 @@
 ---
-summary: 'Deploy checklist: Convex backend + Vercel web app + /api rewrites.'
+summary: 'Deploy checklist: Convex backend + Vercel web app + /api proxy.'
 read_when:
   - Shipping to production
   - Debugging /api routing
@@ -52,7 +52,7 @@ Set env vars:
 
 - `VITE_CONVEX_URL`
 - `VITE_CONVEX_SITE_URL` (Convex “site” URL)
-- `CONVEX_SITE_URL` (same value; used by auth provider config)
+- `CONVEX_SITE_URL` (same value; used by auth provider config and the server-side `/api/*` proxy)
 - `SITE_URL` (web app URL)
 - `VITE_APP_BUILD_SHA` (set to the same commit SHA stamped into Convex)
 
@@ -67,14 +67,18 @@ Do not let Vercel auto-promote a newer web build before Convex is deployed.
 
 ## 3) Route `/api/*` to Convex
 
-This repo currently uses `vercel.json` rewrites:
+This repo now proxies `/api/*` through the app server using
+`server/routes/api/[...path].ts`.
 
-- `source: /api/:path*`
-- `destination: https://<deployment>.convex.site/api/:path*`
+The proxy target is resolved at runtime from:
+
+1. `CONVEX_SITE_URL` (preferred, server-only)
+2. `VITE_CONVEX_SITE_URL` (fallback)
 
 For self-host:
 
-- update `vercel.json` to your deployment’s Convex site URL.
+- set `CONVEX_SITE_URL` to your deployment’s Convex site URL
+- keep `VITE_CONVEX_SITE_URL` aligned if the frontend also needs the public site URL
 
 ## 4) Registry discovery
 

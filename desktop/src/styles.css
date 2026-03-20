@@ -46,6 +46,7 @@
   --red-soft: #c99584;
   --blue: #7d97c8;
   --blue-deep: #5f77a7;
+  --message-strip-default-height: 5rem;
   --shadow:
     0 0 0 4px rgba(62, 38, 24, 0.72),
     10px 10px 0 rgba(67, 43, 27, 0.94);
@@ -62,11 +63,15 @@ html,
 body,
 #root {
   margin: 0;
+  height: 100%;
   min-height: 100%;
+  overflow: hidden;
 }
 
 body {
-  background: #1c120f;
+  background:
+    radial-gradient(circle at top, rgba(255, 244, 214, 0.18), transparent 32%),
+    linear-gradient(180deg, #8b6547 0%, #6b452b 48%, #4a2c1b 100%);
   color: var(--ink);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
@@ -90,35 +95,40 @@ select {
 
 .pixel-shell {
   min-height: 100vh;
-  padding: 24px;
+  height: 100vh;
+  width: 100%;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: transparent;
+}
+
+.pixel-shell-tools-open {
+  overflow-y: auto;
 }
 
 .game-screen {
+  width: min(100%, 1600px);
   max-width: 1600px;
-  margin: 0 auto;
-  padding: 26px;
-  background: var(--bg-1);
-  border: 4px solid var(--line);
-  box-shadow: var(--shadow);
+  margin: 0;
+  flex: 0 0 auto;
+  padding: 4px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
   position: relative;
   overflow: visible;
 }
 
 .game-screen::before {
-  content: "";
-  position: absolute;
-  inset: 14px;
-  background: var(--bg-2);
-  border: 4px solid #bb9668;
-  pointer-events: none;
+  content: none;
 }
 
 .game-screen::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: transparent;
-  pointer-events: none;
+  content: none;
 }
 
 .hud-bar,
@@ -161,7 +171,7 @@ select {
   align-items: center;
   justify-content: center;
   gap: 22px;
-  padding: 20px 22px;
+  padding: 16px 18px;
   background: var(--panel-2);
   position: relative;
   z-index: 1;
@@ -441,6 +451,11 @@ select {
 .message-strip-lines {
   display: grid;
   gap: 4px;
+  max-height: calc(var(--message-strip-default-height) * 3);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .message-strip-lines span {
@@ -454,13 +469,14 @@ select {
   display: grid;
   grid-template-columns: minmax(360px, 0.92fr) minmax(620px, 1.18fr);
   grid-template-rows: minmax(0, 1fr) auto;
-  gap: 20px;
-  margin-top: 20px;
+  gap: 14px;
+  margin-top: 14px;
 }
 
 .pixel-shell-docked .game-screen {
-  max-width: 860px;
-  padding: 18px;
+  width: 100%;
+  max-width: 100%;
+  padding: 4px;
 }
 
 .pixel-shell-docked .board-grid {
@@ -479,6 +495,7 @@ select {
   grid-row: 1;
   min-height: 0;
   gap: 14px;
+  width: 100%;
 }
 
 .pixel-shell-docked .portrait-stage {
@@ -492,7 +509,7 @@ select {
 }
 
 .pixel-shell-docked {
-  padding: 16px;
+  padding: 0;
 }
 
 .pixel-shell-docked .hud-bar {
@@ -618,8 +635,8 @@ select {
   grid-template-rows: minmax(0, 1fr);
   grid-column: 1;
   grid-row: 1;
-  height: 1040px;
-  max-height: 1040px;
+  height: 980px;
+  max-height: 980px;
   min-height: 0;
   overflow: hidden;
 }
@@ -627,22 +644,69 @@ select {
 .center-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 20px;
+  gap: 14px;
   grid-column: 2;
   grid-row: 1;
-  min-height: 1040px;
+  min-height: 980px;
 }
 
 .tool-pane {
   grid-column: 1 / span 2;
   grid-row: 2;
   display: grid;
+  gap: 16px;
+  align-items: start;
+  padding: 20px 22px;
+  background: var(--panel);
+}
+
+.tool-pane-collapsed {
+  gap: 0;
+  padding: 6px 10px;
+}
+
+.tool-pane-collapsed .tool-pane-toggle {
+  min-height: 42px;
+}
+
+.tool-pane-grid {
+  display: grid;
   grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr) 210px;
   gap: 20px;
   align-items: start;
   grid-auto-rows: min-content;
-  padding: 20px 22px;
-  background: var(--panel);
+}
+
+.tool-pane-toggle {
+  min-height: 54px;
+  background: linear-gradient(180deg, #89a4d9 0%, #6f8cbf 100%);
+  color: #fff7e6;
+}
+
+.tool-pane-toggle-hint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  background: rgba(40, 58, 88, 0.22);
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tool-pane-grid > .tool-block {
+  grid-column: auto;
+}
+
+.tool-pane-grid > .trash-zone {
+  grid-column: 3;
+  grid-row: 1 / span 3;
+}
+
+.tool-pane-grid > .tool-block:nth-child(3) {
+  grid-column: 1 / span 2;
 }
 
 .loadout-window {
@@ -652,19 +716,6 @@ select {
   gap: 14px;
   padding: 18px;
   background: var(--panel-2);
-}
-
-.tool-pane > .tool-block {
-  grid-column: auto;
-}
-
-.tool-pane > .trash-zone {
-  grid-column: 3;
-  grid-row: 1 / span 3;
-}
-
-.tool-pane > .tool-block:nth-child(3) {
-  grid-column: 1 / span 2;
 }
 
 .pane-head {
@@ -741,6 +792,27 @@ select {
   overflow: auto;
   padding: 18px;
   background: #f7efdc;
+}
+
+.catalog-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 3px solid var(--line);
+  background: #e6d08d;
+  color: #65481a;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 247, 224, 0.55),
+    4px 4px 0 rgba(88, 58, 37, 0.24);
+}
+
+.catalog-status svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .shopkeeper-float {
@@ -1696,37 +1768,6 @@ select {
   color: #553521;
 }
 
-.debug-switches {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-.debug-switches-label {
-  font-family: var(--font-display);
-  font-size: 0.66rem;
-  color: #7a5a44;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.debug-switch {
-  border: 2px solid rgba(95, 58, 34, 0.18);
-  background: #e8dcc2;
-  color: #553521;
-}
-
-.debug-switch:hover {
-  background: #efe5cf;
-}
-
-.debug-switch-reset {
-  background: #d7d7d1;
-  color: #4f4f4a;
-}
-
 .class-card-kicker,
 .class-card-summary {
   font-family: var(--font-display);
@@ -2129,12 +2170,15 @@ body.skill-dragging * {
 
   .tool-pane {
     order: 3;
+  }
+
+  .tool-pane-grid {
     grid-template-columns: 1fr;
   }
 
-  .tool-pane > .tool-block,
-  .tool-pane > .tool-block:nth-child(3),
-  .tool-pane > .trash-zone {
+  .tool-pane-grid > .tool-block,
+  .tool-pane-grid > .tool-block:nth-child(3),
+  .tool-pane-grid > .trash-zone {
     grid-column: 1;
     grid-row: auto;
   }

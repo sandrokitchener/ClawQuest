@@ -80,8 +80,9 @@ clawhub sync --root /path/to/skills
 
 ## `GET /api/*` works locally but not on Vercel
 
-- Check `vercel.json` rewrite destination points at your Convex site URL.
-- Ensure `VITE_CONVEX_SITE_URL` and `CONVEX_SITE_URL` match your deployment.
+- Ensure `CONVEX_SITE_URL` is set in the Vercel project.
+- Ensure `VITE_CONVEX_SITE_URL` matches the same deployment if the frontend needs the public Convex site URL.
+- Confirm the app server proxy route exists at `server/routes/api/[...path].ts`.
 
 ## `deploy.yml` fails before deploy or smoke runs
 

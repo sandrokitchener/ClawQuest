@@ -10,6 +10,7 @@ import {
   getFontBuffers,
   getMarkDataUrl,
 } from '../../og/ogAssets'
+import { getServerApiBase } from '../../lib/convexSite'
 import { buildSoulOgSvg } from '../../og/soulOgSvg'
 
 type OgQuery = {
@@ -24,17 +25,6 @@ type OgQuery = {
 function cleanString(value: unknown) {
   if (typeof value !== 'string') return ''
   return value.trim()
-}
-
-function getApiBase(eventHost: string | null) {
-  const direct = process.env.VITE_CONVEX_SITE_URL?.trim()
-  if (direct) return direct
-
-  const site = process.env.SITE_URL?.trim() || process.env.VITE_SITE_URL?.trim()
-  if (site) return site
-
-  if (eventHost) return `https://${eventHost}`
-  return 'https://onlycrabs.ai'
 }
 
 function buildFooter(slug: string, owner: string | null) {
@@ -57,7 +47,10 @@ export default defineEventHandler(async (event) => {
 
   const needFetch = !titleFromQuery || !descriptionFromQuery || !ownerFromQuery || !versionFromQuery
   const meta: SoulOgMeta | null = needFetch
-    ? await fetchSoulOgMeta(slug, getApiBase(getRequestHost(event)))
+    ? await fetchSoulOgMeta(
+        slug,
+        getServerApiBase('https://onlycrabs.ai', { eventHost: getRequestHost(event) }),
+      )
     : null
 
   const owner = ownerFromQuery || meta?.owner || ''

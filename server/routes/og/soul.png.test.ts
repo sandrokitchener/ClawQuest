@@ -76,6 +76,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  delete process.env.CONVEX_SITE_URL
   delete process.env.VITE_CONVEX_SITE_URL
   delete process.env.SITE_URL
   delete process.env.VITE_SITE_URL

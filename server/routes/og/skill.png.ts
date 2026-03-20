@@ -9,6 +9,7 @@ import {
   getFontBuffers,
   getMarkDataUrl,
 } from '../../og/ogAssets'
+import { getServerApiBase } from '../../lib/convexSite'
 import { buildSkillOgSvg } from '../../og/skillOgSvg'
 
 type OgQuery = {
@@ -25,17 +26,6 @@ function cleanString(value: unknown) {
   return value.trim()
 }
 
-function getApiBase(eventHost: string | null) {
-  const direct = process.env.VITE_CONVEX_SITE_URL?.trim()
-  if (direct) return direct
-
-  const site = process.env.SITE_URL?.trim() || process.env.VITE_SITE_URL?.trim()
-  if (site) return site
-
-  if (eventHost) return `https://${eventHost}`
-  return 'https://clawhub.ai'
-}
-
 export default defineEventHandler(async (event) => {
   const query = getQuery(event) as OgQuery
   const slug = cleanString(query.slug)
@@ -50,7 +40,12 @@ export default defineEventHandler(async (event) => {
   const descriptionFromQuery = cleanString(query.description)
 
   const needFetch = !titleFromQuery || !descriptionFromQuery || !ownerFromQuery || !versionFromQuery
-  const meta = needFetch ? await fetchSkillOgMeta(slug, getApiBase(getRequestHost(event))) : null
+  const meta = needFetch
+    ? await fetchSkillOgMeta(
+        slug,
+        getServerApiBase('https://clawhub.ai', { eventHost: getRequestHost(event) }),
+      )
+    : null
 
   const owner = ownerFromQuery || meta?.owner || ''
   const version = versionFromQuery || meta?.version || ''

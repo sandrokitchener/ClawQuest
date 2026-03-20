@@ -1,5 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
+const FULL_WINDOW_WIDTH = 1396
+const FULL_WINDOW_HEIGHT = 1264
+const DOCKED_WINDOW_WIDTH = 1296
+const DOCKED_WINDOW_HEIGHT = 1264
+
 export type ConnectionMode = 'local' | 'remote' | 'docker'
 
 export type ManagerConfig = {
@@ -199,15 +204,13 @@ export async function setDesktopWindowDocked(docked: boolean) {
     import('@tauri-apps/api/window'),
   ])
   const appWindow = getCurrentWindow()
-  const width = docked ? 860 : 1580
-  const height = docked ? 900 : 1120
+  const width = docked ? DOCKED_WINDOW_WIDTH : FULL_WINDOW_WIDTH
+  const height = docked ? DOCKED_WINDOW_HEIGHT : FULL_WINDOW_HEIGHT
   const targetSize = new LogicalSize(width, height)
 
   await appWindow.setSizeConstraints({
-    minWidth: width,
-    maxWidth: width,
-    minHeight: height,
-    maxHeight: height,
+    minWidth: 780,
+    minHeight: 680,
   })
   await appWindow.setSize(targetSize)
   await appWindow.center()

@@ -100,6 +100,11 @@ type SkillRarityDetails = {
   metric: string
 }
 
+type CatalogCacheEntry = {
+  cachedAt: number
+  items: RegistrySkill[]
+}
+
 const EMPTY_DRAFT: DraftConfig = {
   workdir: '',
   skillsDir: '',
@@ -151,6 +156,10 @@ const QUEST_PROGRESS_STORAGE_KEY = 'claw-quest-adventurer-progress-v1'
 const CONNECTION_SETTINGS_STORAGE_KEY = 'claw-quest-connection-settings-v1'
 const DRAG_TRANSFER_KEY = 'application/x-claw-quest-skill'
 const AVATAR_SPEAKING_MS = 2600
+const CATALOG_SEARCH_DEBOUNCE_MS = 420
+const CATALOG_CACHE_TTL_MS = 60_000
+const CATALOG_CACHE_MAX_ENTRIES = 18
+const CATALOG_RATE_LIMIT_FALLBACK_MS = 30_000
 const AGENT_RACE_OPTIONS: AgentRace[] = ['elf', 'orc', 'human', 'halfling', 'tiefling', 'goblin']
 const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -616,6 +625,8 @@ export default function App() {
   const [sort, setSort] = useState<BrowseSort>('downloads')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [catalogIssue, setCatalogIssue] = useState('')
+  const [catalogCooldownUntil, setCatalogCooldownUntil] = useState<number | null>(null)
   const [booted, setBooted] = useState(false)
   const [loadingState, setLoadingState] = useState(true)
   const [loadingCatalog, setLoadingCatalog] = useState(true)
@@ -625,11 +636,11 @@ export default function App() {
   const [manualDrag, setManualDrag] = useState<ManualDragSession | null>(null)
   const [dropZone, setDropZone] = useState<DropZone>(null)
   const [hoveredGearSlot, setHoveredGearSlot] = useState<GearSlot | null>(null)
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [buildsOpen, setBuildsOpen] = useState(false)
   const [rootsOpen, setRootsOpen] = useState(false)
   const [slotPreferences, setSlotPreferences] = useState<SlotPreferenceMap>(() => readSlotPreferences())
   const [agentRace] = useState<AgentRace>(() => readOrCreateAgentRace())
-  const [debugRaceOverride, setDebugRaceOverride] = useState<AgentRace | null>(null)
   const [questsCompleted, setQuestsCompleted] = useState(() => readQuestProgress())
   const [isDocked, setIsDocked] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -641,8 +652,11 @@ export default function App() {
   const [avatarSpeaking, setAvatarSpeaking] = useState(false)
   const didInitRef = useRef(false)
   const catalogRequestRef = useRef(0)
+  const catalogCacheRef = useRef<Map<string, CatalogCacheEntry>>(new Map())
   const dragPayloadRef = useRef<DragPayload>(null)
   const avatarSpeakingTimeoutRef = useRef<number | null>(null)
+  const toolsPaneScrollFrameRef = useRef<number | null>(null)
+  const shellViewportRef = useRef<HTMLElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
 
   const state = managerState ?? EMPTY_STATE
@@ -651,7 +665,7 @@ export default function App() {
   const riskyCount = readySkills.filter((skill) => isRiskyStatus(skill.security.status)).length
   const derivedAgentClass = classifyAgentLoadout(state.installed)
   const displayedAgentClass = derivedAgentClass
-  const displayedAgentRace = debugRaceOverride ?? agentRace
+  const displayedAgentRace = agentRace
   const classTheme = CLASS_THEMES[displayedAgentClass]
   const ClassIcon = classTheme.icon
   const adventurerName = state.agentName?.trim() || 'Adventurer'
@@ -693,10 +707,30 @@ export default function App() {
 
     const timeoutId = window.setTimeout(() => {
       void refreshCatalog(appliedConfig, searchText, sort)
-    }, 180)
+    }, CATALOG_SEARCH_DEBOUNCE_MS)
 
     return () => window.clearTimeout(timeoutId)
   }, [appliedConfig, booted, searchText, sort])
+
+  useEffect(() => {
+    if (!booted || catalogCooldownUntil === null) {
+      return
+    }
+
+    const remainingMs = catalogCooldownUntil - Date.now()
+    if (remainingMs <= 0) {
+      setCatalogCooldownUntil(null)
+      void refreshCatalog(appliedConfig, searchText, sort, { force: true })
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCatalogCooldownUntil(null)
+      void refreshCatalog(appliedConfig, searchText, sort, { force: true })
+    }, remainingMs)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [appliedConfig, booted, catalogCooldownUntil, searchText, sort])
 
   useEffect(() => {
     writeSlotPreferences(slotPreferences)
@@ -728,6 +762,10 @@ export default function App() {
       if (avatarSpeakingTimeoutRef.current !== null) {
         window.clearTimeout(avatarSpeakingTimeoutRef.current)
       }
+
+      if (toolsPaneScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(toolsPaneScrollFrameRef.current)
+      }
     }
   }, [])
 
@@ -741,16 +779,6 @@ export default function App() {
     draftConfig.dockerCommand,
     draftConfig.dockerWorkdir,
   ])
-
-  useEffect(() => {
-    if (!runtime) {
-      return
-    }
-
-    void setDesktopWindowDocked(isDocked).catch((caughtError) => {
-      setError(normalizeCommandError(caughtError))
-    })
-  }, [isDocked, runtime])
 
   useEffect(() => {
     if (!booted) {
@@ -795,14 +823,6 @@ export default function App() {
     }
   }, [manualDrag])
 
-  function cycleDebugRace() {
-    setDebugRaceOverride((current) => nextCycleValue(AGENT_RACE_OPTIONS, current ?? displayedAgentRace))
-  }
-
-  function resetDebugPreview() {
-    setDebugRaceOverride(null)
-  }
-
   function playUiSound(sound: UiSound) {
     const template = soundRefs.current[sound]
     if (!template) {
@@ -816,6 +836,57 @@ export default function App() {
     } catch {
       // Ignore audio failures so the UI keeps moving.
     }
+  }
+
+  function queueShellScrollToTop() {
+    if (toolsPaneScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(toolsPaneScrollFrameRef.current)
+    }
+
+    toolsPaneScrollFrameRef.current = window.requestAnimationFrame(() => {
+      toolsPaneScrollFrameRef.current = window.requestAnimationFrame(() => {
+        toolsPaneScrollFrameRef.current = null
+        shellViewportRef.current?.scrollTo({
+          top: 0,
+          left: 0,
+          behavior: 'auto',
+        })
+      })
+    })
+  }
+
+  function queueShellScrollToBottom() {
+    if (toolsPaneScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(toolsPaneScrollFrameRef.current)
+    }
+
+    toolsPaneScrollFrameRef.current = window.requestAnimationFrame(() => {
+      toolsPaneScrollFrameRef.current = window.requestAnimationFrame(() => {
+        toolsPaneScrollFrameRef.current = null
+        const viewport = shellViewportRef.current
+        if (!viewport) {
+          return
+        }
+
+        viewport.scrollTo({
+          top: viewport.scrollHeight,
+          left: 0,
+          behavior: 'auto',
+        })
+      })
+    })
+  }
+
+  function handleToggleToolsPane() {
+    setToolsOpen((current) => {
+      const next = !current
+      if (current && !next) {
+        queueShellScrollToTop()
+      } else if (!current && next) {
+        queueShellScrollToBottom()
+      }
+      return next
+    })
   }
 
   async function refreshState(nextConfig?: ManagerConfig) {
@@ -850,8 +921,36 @@ export default function App() {
     nextConfig: ManagerConfig | undefined,
     query: string,
     nextSort: BrowseSort,
+    options: { force?: boolean } = {},
   ) {
     const requestId = ++catalogRequestRef.current
+    const trimmedQuery = query.trim()
+    const cooldownRemainingMs = catalogCooldownUntil === null ? 0 : catalogCooldownUntil - Date.now()
+
+    if (cooldownRemainingMs > 0) {
+      if (requestId === catalogRequestRef.current) {
+        setCatalogIssue(formatCatalogRateLimitMessage(cooldownRemainingMs, trimmedQuery))
+        setError((current) => (parseCatalogRateLimit(current) ? '' : current))
+        setLoadingCatalog(false)
+      }
+      return
+    }
+
+    const cacheKey = buildCatalogCacheKey(nextConfig, trimmedQuery, nextSort)
+    if (!options.force) {
+      const cachedItems = readCatalogCache(catalogCacheRef.current, cacheKey)
+      if (cachedItems) {
+        if (requestId === catalogRequestRef.current) {
+          setCatalog(cachedItems)
+          setCatalogIssue('')
+          setCatalogCooldownUntil(null)
+          setError((current) => (parseCatalogRateLimit(current) ? '' : current))
+          setLoadingCatalog(false)
+        }
+        return
+      }
+    }
+
     setLoadingCatalog(true)
 
     try {
@@ -859,20 +958,38 @@ export default function App() {
         const previewItems = buildPreviewCatalog(query, nextSort)
         if (requestId === catalogRequestRef.current) {
           setCatalog(previewItems)
+          setCatalogIssue('')
+          setCatalogCooldownUntil(null)
         }
         return
       }
 
-      const nextItems = query.trim()
-        ? await searchRegistrySkills(nextConfig, query.trim())
+      const nextItems = trimmedQuery
+        ? await searchRegistrySkills(nextConfig, trimmedQuery)
         : await browseRegistrySkills(nextConfig, nextSort)
 
       if (requestId === catalogRequestRef.current) {
+        writeCatalogCache(catalogCacheRef.current, cacheKey, nextItems)
         setCatalog(nextItems)
+        setCatalogIssue('')
+        setCatalogCooldownUntil(null)
+        setError((current) => (parseCatalogRateLimit(current) ? '' : current))
       }
     } catch (caughtError) {
       if (requestId === catalogRequestRef.current) {
-        setError(normalizeCommandError(caughtError))
+        const message = normalizeCommandError(caughtError)
+        const rateLimit = parseCatalogRateLimit(message)
+
+        if (rateLimit) {
+          const cooldownMs = rateLimit.retryAfterMs
+          setCatalogCooldownUntil(Date.now() + cooldownMs)
+          setCatalogIssue(formatCatalogRateLimitMessage(cooldownMs, trimmedQuery))
+          setError((current) => (parseCatalogRateLimit(current) ? '' : current))
+        } else {
+          setCatalogIssue('')
+          setCatalogCooldownUntil(null)
+          setError(message)
+        }
       }
     } finally {
       if (requestId === catalogRequestRef.current) {
@@ -893,7 +1010,7 @@ export default function App() {
   async function handleRefresh() {
     const nextConfig = appliedConfig ?? configFromDraft(draftConfig)
     const nextState = await refreshState(nextConfig)
-    await refreshCatalog(nextConfig, searchText, sort)
+    await refreshCatalog(nextConfig, searchText, sort, { force: true })
 
     if (nextState) {
       playUiSound('blip')
@@ -919,6 +1036,12 @@ export default function App() {
     setIsDocked(nextDocked)
     setSettingsOpen(false)
     setNotice(nextDocked ? 'Docked mode enabled.' : 'Full layout restored.')
+
+    if (runtime) {
+      void setDesktopWindowDocked(nextDocked).catch((caughtError) => {
+        setError(normalizeCommandError(caughtError))
+      })
+    }
   }
 
   function handleToggleSettings() {
@@ -1287,7 +1410,10 @@ export default function App() {
   }
 
   return (
-    <main className={`pixel-shell ${isDocked ? 'pixel-shell-docked' : ''}`}>
+    <main
+      className={`pixel-shell ${isDocked ? 'pixel-shell-docked' : ''} ${toolsOpen ? 'pixel-shell-tools-open' : ''}`}
+      ref={shellViewportRef}
+    >
       <section className={`game-screen ${isDocked ? 'game-screen-docked' : ''}`}>
         <header className="hud-bar">
           <div className="hud-brand" data-tauri-drag-region={isDocked ? '' : undefined} title={isDocked ? 'Drag window' : undefined}>
@@ -1417,6 +1543,13 @@ export default function App() {
               </div>
 
               <div className="merchant-scroll">
+                {catalogIssue ? (
+                  <div className="catalog-status">
+                    <AlertTriangle size={16} />
+                    <span>{catalogIssue}</span>
+                  </div>
+                ) : null}
+
                 <div className="catalog-grid merchant-grid">
               {loadingCatalog ? (
                 <EmptyState
@@ -1425,7 +1558,11 @@ export default function App() {
                   title="Fetching skills"
                 />
               ) : catalog.length === 0 ? (
-                <EmptyState icon={<Search size={22} />} text="Try a different search." title="No matches" />
+                <EmptyState
+                  icon={catalogIssue ? <AlertTriangle size={22} /> : <Search size={22} />}
+                  text={catalogIssue || 'Try a different search.'}
+                  title={catalogIssue ? 'Taking a short breather' : 'No matches'}
+                />
               ) : (
                 catalog.map((skill, index) => {
                   const installed = installedSlugs.has(skill.slug)
@@ -1546,17 +1683,6 @@ export default function App() {
                       {RACE_LABELS[displayedAgentRace]} {classTheme.label}
                     </strong>
                   </div>
-                  <div className="debug-switches">
-                    <span className="debug-switches-label">Preview race</span>
-                    <button className="mini-chip debug-switch" onClick={cycleDebugRace} type="button">
-                      Race
-                    </button>
-                    {debugRaceOverride ? (
-                      <button className="mini-chip debug-switch debug-switch-reset" onClick={resetDebugPreview} type="button">
-                        Live
-                      </button>
-                    ) : null}
-                  </div>
                   <p>
                     {equippedCount} slots filled / {riskyCount} risky
                   </p>
@@ -1617,6 +1743,7 @@ export default function App() {
                       const nextQuestCount = questsCompleted + 1
                       const previousLevel = progress.level
                       const nextProgress = deriveAdventurerProgress(nextQuestCount)
+                      const replyNotice = formatQuestReplyForNotice(outcome.reply, displayedAgentClass)
                       setQuestsCompleted(nextQuestCount)
                       writeQuestProgress(nextQuestCount)
                       setQuestBubble(returnedBubbleForClass(displayedAgentClass))
@@ -1626,8 +1753,8 @@ export default function App() {
                       playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
                       setNotice(
                         nextProgress.level > previousLevel
-                          ? `Level up! Lv. ${nextProgress.level}.\n${flavorQuestReply(outcome.reply, displayedAgentClass)}`
-                          : flavorQuestReply(outcome.reply, displayedAgentClass),
+                          ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
+                          : replyNotice,
                       )
                     } catch (caughtError) {
                       const nextError = normalizeCommandError(caughtError)
@@ -1753,235 +1880,263 @@ export default function App() {
             </section>
           </section>
 
-          <aside className="board-pane tool-pane">
-            <section className="tool-block">
-              <div className="pane-head">
-                <div>
-                  <h2>Build Settings</h2>
-                  <p>Choose local CLI, a remote Gateway, or a Docker container.</p>
-                </div>
-              </div>
+          <aside className={`board-pane tool-pane ${toolsOpen ? 'tool-pane-open' : 'tool-pane-collapsed'}`}>
+            <button
+              aria-controls="desktop-tools-panel"
+              aria-expanded={toolsOpen}
+              className="submenu-toggle tool-pane-toggle"
+              onClick={handleToggleToolsPane}
+              type="button"
+            >
+              <span className="submenu-title">
+                {toolsOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                Desktop Tools
+              </span>
+              <span className="tool-pane-toggle-hint">{toolsOpen ? 'Collapse' : 'Expand'}</span>
+            </button>
 
-              <label className="pixel-field">
-                <span>Connection mode</span>
-                <label className="pixel-select">
-                  <select
-                    onChange={(event) =>
-                      setDraftConfig((current) => ({
-                        ...current,
-                        connectionMode: event.target.value as ConnectionMode,
-                      }))
-                    }
-                    value={draftConfig.connectionMode}
-                  >
-                    <option value="local">Local build</option>
-                    <option value="remote">Remote Gateway</option>
-                    <option value="docker">Docker container</option>
-                  </select>
-                </label>
-              </label>
+            {toolsOpen ? (
+              <div className="tool-pane-grid" id="desktop-tools-panel">
+                <section className="tool-block">
+                  <div className="pane-head">
+                    <div>
+                      <h2>Build Settings</h2>
+                      <p>Choose local CLI, a remote Gateway, or a Docker container.</p>
+                    </div>
+                  </div>
 
-              <label className="pixel-field">
-                <span>Build path</span>
-                <input
-                  onChange={(event) =>
-                    setDraftConfig((current) => ({ ...current, openclawPath: event.target.value }))
-                  }
-                  placeholder="C:\\OpenClaw"
-                  type="text"
-                  value={draftConfig.openclawPath}
-                />
-              </label>
-
-              <label className="pixel-field">
-                <span>Workdir</span>
-                <input
-                  onChange={(event) => setDraftConfig((current) => ({ ...current, workdir: event.target.value }))}
-                  placeholder="C:\\Users\\you\\OpenClawWorkspace"
-                  type="text"
-                  value={draftConfig.workdir}
-                />
-              </label>
-
-              <label className="pixel-field">
-                <span>Skills dir</span>
-                <input
-                  onChange={(event) => setDraftConfig((current) => ({ ...current, skillsDir: event.target.value }))}
-                  placeholder="C:\\Users\\you\\OpenClawWorkspace\\skills"
-                  type="text"
-                  value={draftConfig.skillsDir}
-                />
-              </label>
-
-              {draftConfig.connectionMode === 'remote' ? (
-                <>
                   <label className="pixel-field">
-                    <span>Gateway URL</span>
-                    <input
-                      onChange={(event) => setDraftConfig((current) => ({ ...current, gatewayUrl: event.target.value }))}
-                      placeholder="ws://gateway-host:18789"
-                      type="text"
-                      value={draftConfig.gatewayUrl}
-                    />
+                    <span>Connection mode</span>
+                    <label className="pixel-select">
+                      <select
+                        onChange={(event) =>
+                          setDraftConfig((current) => ({
+                            ...current,
+                            connectionMode: event.target.value as ConnectionMode,
+                          }))
+                        }
+                        value={draftConfig.connectionMode}
+                      >
+                        <option value="local">Local build</option>
+                        <option value="remote">Remote Gateway</option>
+                        <option value="docker">Docker container</option>
+                      </select>
+                    </label>
                   </label>
 
                   <label className="pixel-field">
-                    <span>Gateway token</span>
-                    <input
-                      onChange={(event) => setDraftConfig((current) => ({ ...current, gatewayToken: event.target.value }))}
-                      placeholder="Optional token"
-                      type="password"
-                      value={draftConfig.gatewayToken}
-                    />
-                  </label>
-                  <p className="tool-note">Gateway tokens stay in memory only and require a secure https:// or wss:// URL.</p>
-                </>
-              ) : null}
-
-              {draftConfig.connectionMode === 'docker' ? (
-                <>
-                  <label className="pixel-field">
-                    <span>Docker container</span>
+                    <span>Build path</span>
                     <input
                       onChange={(event) =>
-                        setDraftConfig((current) => ({ ...current, dockerContainer: event.target.value }))
+                        setDraftConfig((current) => ({ ...current, openclawPath: event.target.value }))
                       }
-                      placeholder="openclaw-gateway"
+                      placeholder="C:\\OpenClaw"
                       type="text"
-                      value={draftConfig.dockerContainer}
+                      value={draftConfig.openclawPath}
                     />
                   </label>
 
                   <label className="pixel-field">
-                    <span>Docker command</span>
+                    <span>Workdir</span>
                     <input
-                      onChange={(event) => setDraftConfig((current) => ({ ...current, dockerCommand: event.target.value }))}
-                      placeholder="openclaw"
+                      onChange={(event) => setDraftConfig((current) => ({ ...current, workdir: event.target.value }))}
+                      placeholder="C:\\Users\\you\\OpenClawWorkspace"
                       type="text"
-                      value={draftConfig.dockerCommand}
+                      value={draftConfig.workdir}
                     />
                   </label>
 
                   <label className="pixel-field">
-                    <span>Container workdir</span>
+                    <span>Skills dir</span>
                     <input
-                      onChange={(event) => setDraftConfig((current) => ({ ...current, dockerWorkdir: event.target.value }))}
-                      placeholder="/workspace"
+                      onChange={(event) => setDraftConfig((current) => ({ ...current, skillsDir: event.target.value }))}
+                      placeholder="C:\\Users\\you\\OpenClawWorkspace\\skills"
                       type="text"
-                      value={draftConfig.dockerWorkdir}
+                      value={draftConfig.skillsDir}
                     />
                   </label>
-                </>
-              ) : null}
 
-              <div className="tool-actions">
-                <button
-                  className="pixel-button pixel-button-primary"
-                  disabled={busy}
-                  onClick={() => void applyDraft(draftConfig, 'Updated build settings.')}
-                >
-                  <Wrench size={16} />
-                  Apply
-                </button>
+                  {draftConfig.connectionMode === 'remote' ? (
+                    <>
+                      <label className="pixel-field">
+                        <span>Gateway URL</span>
+                        <input
+                          onChange={(event) =>
+                            setDraftConfig((current) => ({ ...current, gatewayUrl: event.target.value }))
+                          }
+                          placeholder="ws://gateway-host:18789"
+                          type="text"
+                          value={draftConfig.gatewayUrl}
+                        />
+                      </label>
 
-                <button
-                  className="pixel-button"
-                  disabled={busy}
-                  onClick={() =>
-                    void applyDraft(
-                      {
-                        ...draftConfig,
-                        openclawPath: '',
-                      },
-                      'Auto-find enabled.',
-                    )
-                  }
-                >
-                  <RefreshCw size={16} />
-                  Auto-find
-                </button>
-              </div>
+                      <label className="pixel-field">
+                        <span>Gateway token</span>
+                        <input
+                          onChange={(event) =>
+                            setDraftConfig((current) => ({ ...current, gatewayToken: event.target.value }))
+                          }
+                          placeholder="Optional token"
+                          type="password"
+                          value={draftConfig.gatewayToken}
+                        />
+                      </label>
+                      <p className="tool-note">
+                        Gateway tokens stay in memory only and require a secure https:// or wss:// URL.
+                      </p>
+                    </>
+                  ) : null}
 
-              <p className="tool-note">
-                Docker and Remote Gateway mode change quest transport. Skill install and remove still use the host
-                workspace, so Docker setups work best with a bind-mounted skills folder.
-              </p>
-            </section>
+                  {draftConfig.connectionMode === 'docker' ? (
+                    <>
+                      <label className="pixel-field">
+                        <span>Docker container</span>
+                        <input
+                          onChange={(event) =>
+                            setDraftConfig((current) => ({ ...current, dockerContainer: event.target.value }))
+                          }
+                          placeholder="openclaw-gateway"
+                          type="text"
+                          value={draftConfig.dockerContainer}
+                        />
+                      </label>
 
-            <CollapsibleMenu
-              count={state.openclawCandidates.length}
-              open={buildsOpen}
-              title="Detected Builds"
-              onToggle={() => setBuildsOpen((current) => !current)}
-            >
-              <div className="choice-list">
-                {state.openclawCandidates.length === 0 ? (
-                  <EmptyState icon={<HardDrive size={20} />} text="Try Auto-find." title="No builds found" />
-                ) : (
-                  state.openclawCandidates.map((candidate) => (
+                      <label className="pixel-field">
+                        <span>Docker command</span>
+                        <input
+                          onChange={(event) =>
+                            setDraftConfig((current) => ({ ...current, dockerCommand: event.target.value }))
+                          }
+                          placeholder="openclaw"
+                          type="text"
+                          value={draftConfig.dockerCommand}
+                        />
+                      </label>
+
+                      <label className="pixel-field">
+                        <span>Container workdir</span>
+                        <input
+                          onChange={(event) =>
+                            setDraftConfig((current) => ({ ...current, dockerWorkdir: event.target.value }))
+                          }
+                          placeholder="/workspace"
+                          type="text"
+                          value={draftConfig.dockerWorkdir}
+                        />
+                      </label>
+                    </>
+                  ) : null}
+
+                  <div className="tool-actions">
                     <button
-                      className={`choice-card ${candidate.selected ? 'choice-card-selected' : ''}`}
-                      key={candidate.path}
+                      className="pixel-button pixel-button-primary"
+                      disabled={busy}
+                      onClick={() => void applyDraft(draftConfig, 'Updated build settings.')}
+                    >
+                      <Wrench size={16} />
+                      Apply
+                    </button>
+
+                    <button
+                      className="pixel-button"
+                      disabled={busy}
                       onClick={() =>
                         void applyDraft(
                           {
                             ...draftConfig,
-                            openclawPath: candidate.path,
+                            openclawPath: '',
                           },
-                          `Using ${candidate.label}.`,
+                          'Auto-find enabled.',
                         )
                       }
-                      type="button"
                     >
-                      <strong>{candidate.label}</strong>
-                      <span>
-                        {candidate.kind} / {candidate.source}
-                      </span>
-                      <code>{candidate.path}</code>
+                      <RefreshCw size={16} />
+                      Auto-find
                     </button>
-                  ))
-                )}
+                  </div>
+
+                  <p className="tool-note">
+                    Docker and Remote Gateway mode change quest transport. Skill install and remove still use the host
+                    workspace, so Docker setups work best with a bind-mounted skills folder.
+                  </p>
+                </section>
+
+                <CollapsibleMenu
+                  count={state.openclawCandidates.length}
+                  open={buildsOpen}
+                  title="Detected Builds"
+                  onToggle={() => setBuildsOpen((current) => !current)}
+                >
+                  <div className="choice-list">
+                    {state.openclawCandidates.length === 0 ? (
+                      <EmptyState icon={<HardDrive size={20} />} text="Try Auto-find." title="No builds found" />
+                    ) : (
+                      state.openclawCandidates.map((candidate) => (
+                        <button
+                          className={`choice-card ${candidate.selected ? 'choice-card-selected' : ''}`}
+                          key={candidate.path}
+                          onClick={() =>
+                            void applyDraft(
+                              {
+                                ...draftConfig,
+                                openclawPath: candidate.path,
+                              },
+                              `Using ${candidate.label}.`,
+                            )
+                          }
+                          type="button"
+                        >
+                          <strong>{candidate.label}</strong>
+                          <span>
+                            {candidate.kind} / {candidate.source}
+                          </span>
+                          <code>{candidate.path}</code>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </CollapsibleMenu>
+
+                <CollapsibleMenu
+                  count={state.skillRoots.length}
+                  open={rootsOpen}
+                  title="Skill Roots"
+                  onToggle={() => setRootsOpen((current) => !current)}
+                >
+                  <div className="root-list">
+                    {state.skillRoots.length === 0 ? (
+                      <EmptyState icon={<FolderOpen size={20} />} text="No skill roots detected yet." title="No roots" />
+                    ) : (
+                      state.skillRoots.map((root) => <RootRow key={root.path} root={root} />)
+                    )}
+                  </div>
+                </CollapsibleMenu>
+
+                <section
+                  className={`trash-zone ${dropZone === 'trash' ? 'trash-zone-active' : ''}`}
+                  data-drop-zone="trash"
+                  onDragLeave={() => {
+                    if (dropZone === 'trash') {
+                      setDropZone(null)
+                    }
+                  }}
+                  onDragOver={(event) => {
+                    const payload = resolveLiveDragPayload(event)
+                    if (!payload || payload.kind !== 'installed') {
+                      return
+                    }
+
+                    event.preventDefault()
+                    setDropZone('trash')
+                  }}
+                  onDrop={(event) => void handleTrashDrop(event)}
+                >
+                  <PixelTrashCan active={dropZone === 'trash'} />
+                  <strong>Trash</strong>
+                  <span>Discard equipped skills</span>
+                </section>
               </div>
-            </CollapsibleMenu>
-
-            <CollapsibleMenu
-              count={state.skillRoots.length}
-              open={rootsOpen}
-              title="Skill Roots"
-              onToggle={() => setRootsOpen((current) => !current)}
-            >
-              <div className="root-list">
-                {state.skillRoots.length === 0 ? (
-                  <EmptyState icon={<FolderOpen size={20} />} text="No skill roots detected yet." title="No roots" />
-                ) : (
-                  state.skillRoots.map((root) => <RootRow key={root.path} root={root} />)
-                )}
-              </div>
-            </CollapsibleMenu>
-
-            <section
-              className={`trash-zone ${dropZone === 'trash' ? 'trash-zone-active' : ''}`}
-              data-drop-zone="trash"
-              onDragLeave={() => {
-                if (dropZone === 'trash') {
-                  setDropZone(null)
-                }
-              }}
-              onDragOver={(event) => {
-                const payload = resolveLiveDragPayload(event)
-                if (!payload || payload.kind !== 'installed') {
-                  return
-                }
-
-                event.preventDefault()
-                setDropZone('trash')
-              }}
-              onDrop={(event) => void handleTrashDrop(event)}
-            >
-              <PixelTrashCan active={dropZone === 'trash'} />
-              <strong>Trash</strong>
-              <span>Discard equipped skills</span>
-            </section>
+            ) : null}
           </aside>
         </div>
       </section>
@@ -2920,12 +3075,6 @@ function includesAny(source: string, keywords: readonly string[]) {
   return keywords.some((keyword) => source.includes(keyword))
 }
 
-function nextCycleValue<T extends string>(options: readonly T[], current: T) {
-  const currentIndex = options.indexOf(current)
-  const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % options.length : 0
-  return options[nextIndex]
-}
-
 function seedSlotPreferences(installed: InstalledSkill[], current: SlotPreferenceMap): SlotPreferenceMap {
   const installedSlugs = new Set(installed.map((skill) => skill.slug))
   const next: SlotPreferenceMap = {}
@@ -3105,32 +3254,96 @@ function formatReasonCode(code: string) {
     .replace(/\b\w/g, (value) => value.toUpperCase())
 }
 
-function summarizeQuestReply(reply: string) {
-  const firstLine = reply
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean)
+function formatQuestReplyForNotice(reply: string, agentClass: AgentClass) {
+  const normalized = reply.trim()
 
-  if (!firstLine) {
-    return 'Quest complete.'
-  }
-
-  return firstLine.length > 110 ? `${firstLine.slice(0, 107)}...` : firstLine
-}
-
-function flavorQuestReply(reply: string, agentClass: AgentClass) {
-  const summary = summarizeQuestReply(reply)
-
-  if (!summary) {
+  if (!normalized) {
     return emptyQuestReplyForClass(agentClass)
   }
 
-  if (/^ok\b/i.test(summary)) {
-    return okQuestReplyForClass(agentClass)
+  return normalized
+}
+
+function buildCatalogCacheKey(config: ManagerConfig | undefined, query: string, sort: BrowseSort) {
+  return JSON.stringify({
+    connectionMode: config?.connectionMode ?? 'local',
+    query: query.toLowerCase(),
+    registry: config?.registry?.trim().toLowerCase() ?? '',
+    sort,
+  })
+}
+
+function readCatalogCache(cache: Map<string, CatalogCacheEntry>, key: string) {
+  const cached = cache.get(key)
+  if (!cached) {
+    return null
   }
 
-  const flavored = classFlavorSummary(summary, agentClass)
-  return classFlavorPrefix(agentClass, flavored)
+  if (Date.now() - cached.cachedAt > CATALOG_CACHE_TTL_MS) {
+    cache.delete(key)
+    return null
+  }
+
+  return cached.items
+}
+
+function writeCatalogCache(cache: Map<string, CatalogCacheEntry>, key: string, items: RegistrySkill[]) {
+  cache.set(key, {
+    cachedAt: Date.now(),
+    items,
+  })
+
+  if (cache.size <= CATALOG_CACHE_MAX_ENTRIES) {
+    return
+  }
+
+  const oldestEntries = [...cache.entries()].sort(([, left], [, right]) => left.cachedAt - right.cachedAt)
+  while (oldestEntries.length > CATALOG_CACHE_MAX_ENTRIES) {
+    const [oldestKey] = oldestEntries.shift() ?? []
+    if (!oldestKey) {
+      break
+    }
+    cache.delete(oldestKey)
+  }
+}
+
+function parseCatalogRateLimit(message: string) {
+  const normalized = message.trim().toLowerCase()
+  if (!normalized) {
+    return null
+  }
+
+  if (!normalized.includes('too many requests') && !normalized.includes('rate limit')) {
+    return null
+  }
+
+  const retryMatch = message.match(/try again in (\d+)s/i)
+  const retryAfterMs = retryMatch
+    ? Math.max(1, Number.parseInt(retryMatch[1] ?? '0', 10)) * 1000
+    : CATALOG_RATE_LIMIT_FALLBACK_MS
+
+  return { retryAfterMs }
+}
+
+function formatCatalogRateLimitMessage(retryAfterMs: number, query: string) {
+  const retryLabel = formatCatalogRetryDelay(retryAfterMs)
+
+  if (query) {
+    return `The registry asked us to slow down while searching for "${query}". We'll try again in about ${retryLabel}.`
+  }
+
+  return `The registry asked us to slow down for a moment. We'll refresh the market again in about ${retryLabel}.`
+}
+
+function formatCatalogRetryDelay(retryAfterMs: number) {
+  const totalSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000))
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`
+  }
+
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
 }
 
 function returnedBubbleForClass(agentClass: AgentClass) {
@@ -3156,75 +3369,6 @@ function emptyQuestReplyForClass(agentClass: AgentClass) {
       return "Trail's clear. Job's done."
     case 'rogue':
       return 'Heh. Done and dusted.'
-  }
-}
-
-function okQuestReplyForClass(agentClass: AgentClass) {
-  switch (agentClass) {
-    case 'paladin':
-      return "By thy leave, m'lord, it is done."
-    case 'cleric':
-      return 'Peace be with thee. It is done.'
-    case 'ranger':
-      return "Tracked true. It's done."
-    case 'rogue':
-      return 'Heh. Clean work.'
-  }
-}
-
-function classFlavorSummary(summary: string, agentClass: AgentClass) {
-  const normalized = summary.trim()
-
-  switch (agentClass) {
-    case 'paladin':
-      return normalized
-        .replace(/\byour\b/gi, 'thy')
-        .replace(/\byou\b/gi, 'thee')
-        .replace(/\bare\b/gi, 'art')
-        .replace(/\bwill\b/gi, 'shall')
-        .replace(/\bhas\b/gi, 'hath')
-        .replace(/\bdo not\b/gi, 'dost not')
-        .replace(/\bdoes not\b/gi, 'doth not')
-        .replace(/\bfailed\b/gi, 'did falter')
-        .replace(/\berror\b/gi, 'mishap')
-        .replace(/\bsearch\b/gi, 'seek')
-        .replace(/\bbuild\b/gi, 'forge')
-    case 'cleric':
-      return normalized
-        .replace(/\berror\b/gi, 'discord')
-        .replace(/\bfailed\b/gi, 'did waver')
-        .replace(/\bfix\b/gi, 'mend')
-        .replace(/\bbuild\b/gi, 'restore')
-        .replace(/\bsearch\b/gi, 'seek')
-        .replace(/\bdebug\b/gi, 'discern')
-    case 'ranger':
-      return normalized
-        .replace(/\bsearch\b/gi, 'track')
-        .replace(/\bfind\b/gi, 'spot')
-        .replace(/\bbrowse\b/gi, 'scout')
-        .replace(/\berror\b/gi, 'snag')
-        .replace(/\bfailed\b/gi, 'lost the trail')
-        .replace(/\bbuild\b/gi, 'set up')
-    case 'rogue':
-      return normalized
-        .replace(/\berror\b/gi, 'snag')
-        .replace(/\bfailed\b/gi, 'went sideways')
-        .replace(/\bsearch\b/gi, 'case')
-        .replace(/\bbuild\b/gi, 'rig')
-        .replace(/\bfix\b/gi, 'patch')
-  }
-}
-
-function classFlavorPrefix(agentClass: AgentClass, summary: string) {
-  switch (agentClass) {
-    case 'paladin':
-      return `By thy leave, m'lord: ${summary}`
-    case 'cleric':
-      return `Peace be with thee. ${summary}`
-    case 'ranger':
-      return `Trail report: ${summary}`
-    case 'rogue':
-      return `Heh. ${summary}`
   }
 }
 
