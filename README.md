@@ -6,6 +6,7 @@
   <a href="https://github.com/sandrokitchener/ClawQuest/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sandrokitchener/ClawQuest/ci.yml?branch=main&style=for-the-badge&label=Desktop%20CI" alt="Desktop CI"></a>
   <a href="https://github.com/sandrokitchener/ClawQuest/blob/main/desktop/package.json"><img src="https://img.shields.io/github/package-json/v/sandrokitchener/ClawQuest?filename=desktop%2Fpackage.json&style=for-the-badge&label=Desktop%20Version" alt="Desktop Version"></a>
   <a href="https://github.com/sandrokitchener/ClawQuest/stargazers"><img src="https://img.shields.io/github/stars/sandrokitchener/ClawQuest?style=for-the-badge" alt="GitHub Stars"></a>
+  <a href="https://buymeacoffee.com/akitchener"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Buy Me a Coffee"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
