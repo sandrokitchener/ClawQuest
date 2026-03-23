@@ -27,6 +27,12 @@ The point is not to replace OpenClaw. The point is to sit beside it and make a f
 - see rough security state for installed skills
 - send a prompt to your agent without leaving the app
 
+## Mobile branch
+
+The Android/mobile build is being developed on the dedicated `codex/mobile-apk-viability` branch so `main` can stay focused on the stable desktop app.
+
+That branch currently contains the mobile layout experiments, first-run Gateway setup flow, APK packaging work, and mobile prerelease tags like `mobile-v0.1.3`.
+
 ## Current scope
 
 Right now Claw Quest is aimed at people who already use OpenClaw and want a desktop manager for it. The app works best when the Gateway is already running and the OpenClaw workspace is reachable from the host machine. Local OpenClaw installs are the smoothest path, but the app can also be pointed at a remote Gateway or a Docker-based setup.
