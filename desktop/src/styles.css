@@ -586,6 +586,23 @@ textarea {
   max-width: 120px;
 }
 
+.pixel-shell-mobile .portrait-speech {
+  top: 72px;
+}
+
+.pixel-shell-mobile .quest-bubble {
+  max-width: min(100%, 210px);
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  line-height: 1.05;
+}
+
+.pixel-shell-mobile .quest-bubble::after {
+  bottom: -10px;
+  width: 14px;
+  height: 14px;
+}
+
 .pixel-shell-mobile.pixel-shell-docked .inventory-pane {
   display: grid;
   position: fixed;

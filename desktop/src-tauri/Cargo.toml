@@ -1,6 +1,6 @@
 [package]
 name = "claw-quest"
-version = "0.1.1"
+version = "0.1.2"
 description = "Drag-and-drop Claw Quest skill manager"
 edition = "2021"
 
