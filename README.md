@@ -10,15 +10,21 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is a desktop front end for OpenClaw that turns skill management into a little RPG loadout screen instead of a pile of shell commands.</em></p>
+<p align="center"><em>Send adventurers on quests with magical equipment called skills. Claw Quest is an OpenClaw front end that turns skill management into a little RPG loadout screen instead of a pile of shell commands.</em></p>
 
 ![Claw Quest desktop window](docs/screenshots/claw-quest-window.png)
 
-## Desktop-first repo
+## Desktop and mobile repo
 
-Claw Quest is a Windows-first desktop companion for OpenClaw. It auto-detects an OpenClaw workspace, shows installed skills as equipment around a character, lets you browse and install skills from ClawHub, and sends prompts back through OpenClaw from the same screen.
+Claw Quest is a Tauri-based OpenClaw companion with two current targets:
 
-This repository still contains the supporting ClawHub and registry code that the desktop app talks to, but the primary product in this repo right now is the Tauri desktop app in [`desktop/`](desktop/).
+- Windows desktop builds with installer bundles
+- Android mobile builds packaged as APKs
+
+Both targets now live on `main` and share the same app source in [`desktop/`](desktop/). The GitHub release workflows are separated by tag:
+
+- `desktop-v*` publishes Windows desktop installers
+- `mobile-v*` publishes Android APK prereleases
 
 The point is not to replace OpenClaw. The point is to sit beside it and make a few common tasks feel better:
 
@@ -27,15 +33,9 @@ The point is not to replace OpenClaw. The point is to sit beside it and make a f
 - see rough security state for installed skills
 - send a prompt to your agent without leaving the app
 
-## Mobile branch
-
-The Android/mobile build is being developed on the dedicated `codex/mobile-apk-viability` branch so `main` can stay focused on the stable desktop app.
-
-That branch currently contains the mobile layout experiments, first-run Gateway setup flow, APK packaging work, and mobile prerelease tags like `mobile-v0.1.3`.
-
 ## Current scope
 
-Right now Claw Quest is aimed at people who already use OpenClaw and want a desktop manager for it. The app works best when the Gateway is already running and the OpenClaw workspace is reachable from the host machine. Local OpenClaw installs are the smoothest path, but the app can also be pointed at a remote Gateway or a Docker-based setup.
+Right now Claw Quest is aimed at people who already use OpenClaw and want a friendlier desktop or mobile shell around it. The app works best when the Gateway is already running and the OpenClaw workspace is reachable from the host machine. Local OpenClaw installs are the smoothest path, but the app can also be pointed at a remote Gateway or a Docker-based setup.
 
 Skill install and remove are still host-filesystem operations, so Docker users should bind-mount the same workspace and skills directory that the app can see.
 
@@ -59,15 +59,23 @@ bun run desktop:dev
 
 This launches the Tauri desktop app in development mode.
 
-## Build the desktop app
+## Build targets
+
+### Desktop
 
 From the repo root:
 
 ```bash
+bun run desktop:dev
 bun run desktop:build
+bun run desktop:check
 ```
 
-That runs a full Tauri production build. If you only want the direct Windows executable without installer bundles:
+- `desktop:dev` runs the Tauri desktop app in development mode
+- `desktop:build` creates the Windows desktop bundles
+- `desktop:check` runs the desktop TypeScript and Rust checks
+
+If you only want the direct Windows executable without installer bundles:
 
 ```bash
 cd desktop
@@ -80,19 +88,46 @@ The direct executable ends up at:
 desktop\src-tauri\target\release\claw-quest.exe
 ```
 
-## Useful commands
+### Mobile (Android)
 
-From the repo root:
+You will also need a working Android toolchain:
+
+- Java 21
+- Android SDK command-line tools
+- Android platform `android-36`
+- Android build-tools `36.1.0`
+- Android NDK `27.2.12479018`
+
+Then from the repo root:
+
+```bash
+cd desktop
+bunx tauri android init --ci
+bunx tauri android build --apk --target aarch64 --ci
+```
+
+The generated APK will be placed under the Android Gradle output tree inside `desktop/src-tauri/gen/android/`.
+
+## Releases
+
+GitHub Actions release builds are split by tag:
+
+```bash
+git tag desktop-vX.Y.Z
+git push origin desktop-vX.Y.Z
+```
+
+```bash
+git tag mobile-vX.Y.Z
+git push origin mobile-vX.Y.Z
+```
+
+Useful extra desktop-only commands from the repo root:
 
 ```bash
 bun run desktop:ui:dev
 bun run desktop:ui:build
-bun run desktop:check
 ```
-
-- `desktop:ui:dev` runs the Vite UI only
-- `desktop:ui:build` builds the desktop frontend only
-- `desktop:check` runs the desktop TypeScript and Rust checks
 
 Desktop-specific setup and connection-mode notes live in [`desktop/README.md`](desktop/README.md).
 
