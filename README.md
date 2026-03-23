@@ -108,6 +108,58 @@ bunx tauri android build --apk --target aarch64 --ci
 
 The generated APK will be placed under the Android Gradle output tree inside `desktop/src-tauri/gen/android/`.
 
+## Connection modes
+
+Claw Quest supports three quest transport modes in `Build Settings`.
+
+### Local build
+
+Use this when OpenClaw is installed on the same machine as Claw Quest.
+
+Recommended:
+
+- leave `Build path` empty and use `Auto-find`
+- point `Workdir` at your OpenClaw workspace if needed
+- make sure `openclaw gateway` is already running
+
+### Remote Gateway
+
+Use this when the Gateway is running on another machine.
+
+Fill in:
+
+- `Connection mode`: `Remote Gateway`
+- `Gateway URL`: your reachable gateway URL
+- `Gateway token`: token if the gateway requires one
+
+Notes:
+
+- this mode still needs an OpenClaw CLI installed locally
+- the app uses a temporary remote-mode OpenClaw config behind the scenes to send quests through that gateway
+
+### Docker container
+
+Use this when OpenClaw is running inside Docker.
+
+Fill in:
+
+- `Connection mode`: `Docker container`
+- `Docker container`: container name
+- `Docker command`: usually `openclaw`
+- `Container workdir`: optional, for example `/workspace`
+
+Recommended Docker setup:
+
+- bind-mount the OpenClaw workspace to a host folder
+- keep the skills directory on that mounted workspace
+- run the Gateway inside the container before sending quests
+
+Why the bind mount matters:
+
+- the quest transport can run inside Docker
+- but skill install/remove in Claw Quest still writes to the host filesystem
+- so the host and container should share the same workspace and skills folder
+
 ## Releases
 
 GitHub Actions release builds are split by tag:
@@ -128,8 +180,6 @@ Useful extra desktop-only commands from the repo root:
 bun run desktop:ui:dev
 bun run desktop:ui:build
 ```
-
-Desktop-specific setup and connection-mode notes live in [`desktop/README.md`](desktop/README.md).
 
 ## Build details
 
@@ -155,7 +205,6 @@ Credits for bundled fonts, sound tools, and other third-party materials live in 
 
 ## More docs
 
-- [`desktop/README.md`](desktop/README.md)
 - [`docs/README.md`](docs/README.md)
 - [`docs/quickstart.md`](docs/quickstart.md)
 - [`docs/cli.md`](docs/cli.md)
