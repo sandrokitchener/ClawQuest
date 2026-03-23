@@ -1,8 +1,12 @@
 [package]
 name = "claw-quest"
-version = "0.1.0"
+version = "0.1.1"
 description = "Drag-and-drop Claw Quest skill manager"
 edition = "2021"
+
+[lib]
+name = "claw_quest_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

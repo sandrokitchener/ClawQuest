@@ -5,12 +5,19 @@ use std::{
   fs,
   io::{Read, Write},
   path::{Path, PathBuf},
+  sync::{Mutex, OnceLock},
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio::{process::Command, time::timeout};
+use tauri::Emitter;
+use tokio::{
+  io::{AsyncBufReadExt, BufReader},
+  process::Command,
+  sync::mpsc,
+  time::{timeout, Instant},
+};
 use zip::ZipArchive;
 
 const DEFAULT_REGISTRY: &str = "https://clawhub.ai";
@@ -22,6 +29,12 @@ const MAX_SKILL_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SKILL_EXTRACTED_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SKILL_ARCHIVE_ENTRIES: usize = 1024;
 const MAX_SKILL_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+const AGENT_DELAY_NOTICE_SECS: u64 = 20;
+const AGENT_LONG_WAIT_NOTICE_SECS: u64 = 60;
+const AGENT_SILENCE_TIMEOUT_SECS: u64 = 300;
+const AGENT_MAX_RUNTIME_SECS: u64 = 900;
+const QUEST_PROGRESS_EVENT: &str = "clawquest://quest-progress";
+static RUNNER_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +163,34 @@ pub struct QuestOutcome {
   pub reply: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuestProgressEvent {
+  stage: String,
+}
+
+#[derive(Clone)]
+struct QuestProgressReporter {
+  window: tauri::Window,
+}
+
+impl QuestProgressReporter {
+  fn new(window: tauri::Window) -> Self {
+    Self {
+      window,
+    }
+  }
+
+  fn emit(&self, stage: &'static str) {
+    let _ = self.window.emit(
+      QUEST_PROGRESS_EVENT,
+      QuestProgressEvent {
+        stage: stage.to_string(),
+      },
+    );
+  }
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedManagerConfig {
   workdir: PathBuf,
@@ -169,11 +210,30 @@ struct ResolvedManagerConfig {
 
 struct TemporaryConfigFile {
   path: PathBuf,
+  persist_path: PathBuf,
+  original_gateway: Option<serde_json::Value>,
 }
 
 impl TemporaryConfigFile {
   fn path(&self) -> &Path {
     &self.path
+  }
+
+  fn persist_runtime_updates(&self) -> Result<(), String> {
+    let Some(temp_value) = read_json5_file::<serde_json::Value>(&self.path) else {
+      return Ok(());
+    };
+
+    let Some(value) = prepare_persisted_runtime_config(temp_value, self.original_gateway.as_ref()) else {
+      return Ok(());
+    };
+
+    if let Some(parent) = self.persist_path.parent() {
+      fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let raw = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    fs::write(&self.persist_path, format!("{raw}\n")).map_err(|error| error.to_string())
   }
 }
 
@@ -206,6 +266,11 @@ enum OpenClawRunner {
   Binary(PathBuf),
   CmdScript(PathBuf),
   NodeScript { node: PathBuf, script: PathBuf },
+}
+
+enum CommandOutputLine {
+  Stdout(String),
+  Stderr(String),
 }
 
 impl OpenClawRunner {
@@ -745,6 +810,7 @@ pub async fn uninstall_registry_skill(
 
 #[tauri::command]
 pub async fn send_openclaw_prompt(
+  window: tauri::Window,
   config: Option<ManagerConfig>,
   prompt: String,
 ) -> Result<QuestOutcome, String> {
@@ -754,14 +820,17 @@ pub async fn send_openclaw_prompt(
     return Err("Enter a quest prompt first.".to_string());
   }
 
+  let progress = QuestProgressReporter::new(window);
+
   match resolved.connection_mode.as_str() {
-    "remote" => send_prompt_via_remote_gateway(&resolved, trimmed_prompt).await,
-    "docker" => send_prompt_via_docker(&resolved, trimmed_prompt).await,
-    _ => send_prompt_via_local_runner(&resolved, trimmed_prompt, &[]).await,
+    "remote" => send_prompt_via_remote_gateway(&progress, &resolved, trimmed_prompt).await,
+    "docker" => send_prompt_via_docker(&progress, &resolved, trimmed_prompt).await,
+    _ => send_prompt_via_local_runner(&progress, &resolved, trimmed_prompt, &[]).await,
   }
 }
 
 async fn send_prompt_via_local_runner(
+  progress: &QuestProgressReporter,
   resolved: &ResolvedManagerConfig,
   prompt: &str,
   extra_env: &[(String, String)],
@@ -777,67 +846,73 @@ async fn send_prompt_via_local_runner(
   }
 
   let command_workdir = resolve_command_workdir(&resolved.workdir);
-  let runner = select_gateway_runner(&command_workdir, &runners, extra_env).await?;
-  let agent_id = detect_default_agent_id().unwrap_or_else(|| "main".to_string());
+  let cache_key = build_runner_cache_key(resolved);
+  let cached_runner = get_cached_runner(&cache_key, &runners);
+  let initial_runner = cached_runner
+    .clone()
+    .unwrap_or_else(|| runners[0].clone());
+  progress.emit(if cached_runner.is_some() {
+    "runner-cached"
+  } else {
+    "runner-discovery"
+  });
+  progress.emit("runner-direct");
 
-  let mut command = build_openclaw_command(&runner);
-  apply_command_env(&mut command, extra_env);
+  match run_local_runner_prompt(progress, &command_workdir, prompt, extra_env, &initial_runner).await {
+    Ok(reply) => {
+      cache_runner(&cache_key, &initial_runner);
+      return Ok(QuestOutcome {
+        reply,
+      });
+    }
+    Err(error) => {
+      clear_cached_runner(&cache_key);
+      if !is_retryable_openclaw_runner_error(&error) {
+        return Err(error);
+      }
 
-  command
-    .kill_on_drop(true)
-    .current_dir(&command_workdir)
-    .arg("agent")
-    .arg("--agent")
-    .arg(&agent_id)
-    .arg("--message")
-    .arg(prompt)
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
+      progress.emit("gateway-fallback");
+      let fallback_runner = select_gateway_runner(
+        &command_workdir,
+        &runners,
+        extra_env,
+        Some(&initial_runner),
+        progress,
+      )
+      .await?;
+      if runner_cache_value(&fallback_runner) == runner_cache_value(&initial_runner) {
+        return Err(error);
+      }
 
-  let output = run_command_output(
-    &mut command,
-    Duration::from_secs(120),
-    "OpenClaw did not respond within 120 seconds.",
-    &format!("Could not launch the OpenClaw command from {}.", command_workdir.display()),
-  )
-  .await?;
-
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() {
-      stderr
-    } else if !stdout.is_empty() {
-      stdout
-    } else {
-      format!("OpenClaw exited with status {:?}", output.status.code())
-    };
-    return Err(detail);
+      progress.emit("runner-fallback");
+      let reply = run_local_runner_prompt(progress, &command_workdir, prompt, extra_env, &fallback_runner)
+        .await?;
+      cache_runner(&cache_key, &fallback_runner);
+      return Ok(QuestOutcome {
+        reply,
+      });
+    }
   }
-
-  let reply = String::from_utf8_lossy(&output.stdout).trim().to_string();
-  if reply.is_empty() {
-    return Err("OpenClaw returned no response.".to_string());
-  }
-
-  Ok(QuestOutcome {
-    reply,
-  })
 }
 
 async fn send_prompt_via_remote_gateway(
+  progress: &QuestProgressReporter,
   resolved: &ResolvedManagerConfig,
   prompt: &str,
 ) -> Result<QuestOutcome, String> {
+  progress.emit("remote-config");
   let temp_config_path = write_remote_gateway_temp_config(resolved)?;
   let env = vec![(
     "OPENCLAW_CONFIG_PATH".to_string(),
     temp_config_path.path().display().to_string(),
   )];
-  send_prompt_via_local_runner(resolved, prompt, &env).await
+  let outcome = send_prompt_via_local_runner(progress, resolved, prompt, &env).await;
+  let _ = temp_config_path.persist_runtime_updates();
+  outcome
 }
 
 async fn send_prompt_via_docker(
+  progress: &QuestProgressReporter,
   resolved: &ResolvedManagerConfig,
   prompt: &str,
 ) -> Result<QuestOutcome, String> {
@@ -846,56 +921,50 @@ async fn send_prompt_via_docker(
     .clone()
     .ok_or_else(|| "Enter a Docker container name first.".to_string())?;
   let agent_id = detect_default_agent_id().unwrap_or_else(|| "main".to_string());
+  progress.emit("docker-direct");
 
-  let mut health_command = build_docker_exec_command(resolved, &["gateway", "health"])?;
-  let health_output = run_command_output(
-    &mut health_command,
-    Duration::from_secs(10),
-    "Could not reach the Docker OpenClaw Gateway. Start the container and try again.",
-    &format!("Could not launch docker exec for container {container}."),
-  )
-  .await?;
-  if !health_output.status.success() {
-    let detail = command_output_detail(&health_output);
-    return if detail.is_empty() {
-      Err(format!(
-        "No running OpenClaw Gateway was found inside Docker container {container}. Start it and try again."
-      ))
-    } else {
-      Err(format!(
-        "No running OpenClaw Gateway was found inside Docker container {container}. Start it and try again.\n\n{detail}"
-      ))
-    };
+  match run_docker_prompt(progress, resolved, prompt, &agent_id, &container).await {
+    Ok(reply) => Ok(QuestOutcome {
+      reply,
+    }),
+    Err(error) => {
+      if !is_retryable_openclaw_runner_error(&error) {
+        return Err(error);
+      }
+
+      progress.emit("docker-health");
+      let mut health_command = build_docker_exec_command(resolved, &["gateway", "health"])?;
+      let health_output = run_command_output(
+        &mut health_command,
+        Duration::from_secs(10),
+        "Could not reach the Docker OpenClaw Gateway. Start the container and try again.",
+        &format!("Could not launch docker exec for container {container}."),
+      )
+      .await?;
+      if !health_output.status.success() {
+        let detail = command_output_detail(&health_output);
+        if is_openclaw_reauth_required(&detail) {
+          return Err(normalize_openclaw_command_error(&detail));
+        }
+
+        return if detail.is_empty() {
+          Err(format!(
+            "No running OpenClaw Gateway was found inside Docker container {container}. Start it and try again."
+          ))
+        } else {
+          Err(format!(
+            "No running OpenClaw Gateway was found inside Docker container {container}. Start it and try again.\n\n{detail}"
+          ))
+        };
+      }
+
+      progress.emit("docker-retry");
+      let reply = run_docker_prompt(progress, resolved, prompt, &agent_id, &container).await?;
+      Ok(QuestOutcome {
+        reply,
+      })
+    }
   }
-
-  let mut command = build_docker_exec_command(
-    resolved,
-    &["agent", "--agent", &agent_id, "--message", prompt],
-  )?;
-  let output = run_command_output(
-    &mut command,
-    Duration::from_secs(120),
-    "OpenClaw did not respond within 120 seconds.",
-    &format!("Could not launch docker exec for container {container}."),
-  )
-  .await?;
-  if !output.status.success() {
-    let detail = command_output_detail(&output);
-    return Err(if detail.is_empty() {
-      "OpenClaw returned no response.".to_string()
-    } else {
-      detail
-    });
-  }
-
-  let reply = String::from_utf8_lossy(&output.stdout).trim().to_string();
-  if reply.is_empty() {
-    return Err("OpenClaw returned no response.".to_string());
-  }
-
-  Ok(QuestOutcome {
-    reply,
-  })
 }
 
 async fn ensure_gateway_running(
@@ -930,6 +999,9 @@ async fn ensure_gateway_running(
   }
 
   let detail = command_output_detail(&output);
+  if is_openclaw_reauth_required(&detail) {
+    return Err(normalize_openclaw_command_error(&detail));
+  }
   if detail.is_empty() {
     Err("No running OpenClaw Gateway found for the saved build. Start it and try again.".to_string())
   } else {
@@ -943,10 +1015,33 @@ async fn select_gateway_runner(
   workdir: &Path,
   runners: &[OpenClawRunner],
   extra_env: &[(String, String)],
+  preferred_last: Option<&OpenClawRunner>,
+  progress: &QuestProgressReporter,
 ) -> Result<OpenClawRunner, String> {
   let mut failures = Vec::new();
-
+  let preferred_key = preferred_last.map(runner_cache_value);
+  let mut ordered_runners = Vec::with_capacity(runners.len());
   for runner in runners {
+    if preferred_key
+      .as_ref()
+      .map(|value| runner_cache_value(runner) != *value)
+      .unwrap_or(true)
+    {
+      ordered_runners.push(runner);
+    }
+  }
+  for runner in runners {
+    if preferred_key
+      .as_ref()
+      .map(|value| runner_cache_value(runner) == *value)
+      .unwrap_or(false)
+    {
+      ordered_runners.push(runner);
+    }
+  }
+
+  progress.emit("gateway-health");
+  for runner in ordered_runners {
     match ensure_gateway_running(workdir, runner, extra_env).await {
       Ok(()) => return Ok(runner.clone()),
       Err(error) => failures.push((runner.display(), error)),
@@ -2083,6 +2178,48 @@ fn resolve_openclaw_runners(config: &ResolvedManagerConfig) -> Vec<OpenClawRunne
   runners
 }
 
+fn runner_cache() -> &'static Mutex<BTreeMap<String, String>> {
+  RUNNER_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn build_runner_cache_key(config: &ResolvedManagerConfig) -> String {
+  let target = config
+    .openclaw_target
+    .as_ref()
+    .map(|item| path_key(&item.path))
+    .unwrap_or_default();
+  format!(
+    "{}|{}|{}",
+    config.connection_mode,
+    path_key(&config.workdir),
+    target
+  )
+}
+
+fn get_cached_runner(cache_key: &str, runners: &[OpenClawRunner]) -> Option<OpenClawRunner> {
+  let cached = runner_cache().lock().ok()?.get(cache_key).cloned()?;
+  runners
+    .iter()
+    .find(|runner| runner_cache_value(runner) == cached)
+    .cloned()
+}
+
+fn cache_runner(cache_key: &str, runner: &OpenClawRunner) {
+  if let Ok(mut cache) = runner_cache().lock() {
+    cache.insert(cache_key.to_string(), runner_cache_value(runner));
+  }
+}
+
+fn clear_cached_runner(cache_key: &str) {
+  if let Ok(mut cache) = runner_cache().lock() {
+    cache.remove(cache_key);
+  }
+}
+
+fn runner_cache_value(runner: &OpenClawRunner) -> String {
+  runner.display().to_ascii_lowercase()
+}
+
 fn push_openclaw_runner(
   runners: &mut Vec<OpenClawRunner>,
   seen: &mut BTreeSet<String>,
@@ -2333,11 +2470,97 @@ fn apply_command_env(command: &mut Command, extra_env: &[(String, String)]) {
   }
 }
 
+async fn run_local_runner_prompt(
+  progress: &QuestProgressReporter,
+  command_workdir: &Path,
+  prompt: &str,
+  extra_env: &[(String, String)],
+  runner: &OpenClawRunner,
+) -> Result<String, String> {
+  let agent_id = detect_default_agent_id().unwrap_or_else(|| "main".to_string());
+  let mut command = build_openclaw_command(runner);
+  apply_command_env(&mut command, extra_env);
+  command
+    .kill_on_drop(true)
+    .current_dir(command_workdir)
+    .arg("agent")
+    .arg("--agent")
+    .arg(&agent_id)
+    .arg("--message")
+    .arg(prompt)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+
+  progress.emit("agent-working");
+  let output = run_agent_command_output(
+    &mut command,
+    &format!("Could not launch the OpenClaw command from {}.", command_workdir.display()),
+    Some(progress),
+  )
+  .await?;
+
+  if !output.status.success() {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+      stderr
+    } else if !stdout.is_empty() {
+      stdout
+    } else {
+      format!("OpenClaw exited with status {:?}", output.status.code())
+    };
+    return Err(normalize_openclaw_command_error(&detail));
+  }
+
+  let reply = String::from_utf8_lossy(&output.stdout).trim().to_string();
+  if reply.is_empty() {
+    return Err("OpenClaw returned no response.".to_string());
+  }
+
+  Ok(reply)
+}
+
+async fn run_docker_prompt(
+  progress: &QuestProgressReporter,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  agent_id: &str,
+  container: &str,
+) -> Result<String, String> {
+  let mut command =
+    build_docker_exec_command(resolved, &["agent", "--agent", agent_id, "--message", prompt])?;
+  progress.emit("agent-working");
+  let output = run_agent_command_output(
+    &mut command,
+    &format!("Could not launch docker exec for container {container}."),
+    Some(progress),
+  )
+  .await?;
+  if !output.status.success() {
+    let detail = normalize_openclaw_command_error(&command_output_detail(&output));
+    return Err(if detail.is_empty() {
+      "OpenClaw returned no response.".to_string()
+    } else {
+      detail
+    });
+  }
+
+  let reply = String::from_utf8_lossy(&output.stdout).trim().to_string();
+  if reply.is_empty() {
+    return Err("OpenClaw returned no response.".to_string());
+  }
+
+  Ok(reply)
+}
+
 fn hide_command_window(command: &mut Command) {
   #[cfg(windows)]
   {
     command.creation_flags(CREATE_NO_WINDOW);
   }
+
+  #[cfg(not(windows))]
+  let _ = command;
 }
 
 async fn run_command_output(
@@ -2350,6 +2573,139 @@ async fn run_command_output(
     .await
     .map_err(|_| timeout_message.to_string())?
     .map_err(|error| format!("{launch_context}\n\n{error}"))
+}
+
+async fn run_agent_command_output(
+  command: &mut Command,
+  launch_context: &str,
+  progress: Option<&QuestProgressReporter>,
+) -> Result<std::process::Output, String> {
+  let mut child = command
+    .spawn()
+    .map_err(|error| format!("{launch_context}\n\n{error}"))?;
+  let stdout = child
+    .stdout
+    .take()
+    .ok_or_else(|| format!("{launch_context}\n\nCould not capture OpenClaw output."))?;
+  let stderr = child
+    .stderr
+    .take()
+    .ok_or_else(|| format!("{launch_context}\n\nCould not capture OpenClaw error output."))?;
+
+  let (tx, mut rx) = mpsc::unbounded_channel();
+  let stdout_task = tokio::spawn(read_command_lines(stdout, false, tx.clone()));
+  let stderr_task = tokio::spawn(read_command_lines(stderr, true, tx));
+
+  let started_at = Instant::now();
+  let mut last_activity_at = started_at;
+  let mut stdout_lines = Vec::new();
+  let mut stderr_lines = Vec::new();
+  let mut saw_output = false;
+  let mut emitted_delay_notice = false;
+  let mut emitted_long_wait_notice = false;
+
+  loop {
+    let now = Instant::now();
+    let total_runtime = now.duration_since(started_at);
+    let silent_for = now.duration_since(last_activity_at);
+    if total_runtime >= Duration::from_secs(AGENT_MAX_RUNTIME_SECS)
+      || silent_for >= Duration::from_secs(AGENT_SILENCE_TIMEOUT_SECS)
+    {
+      let _ = child.kill().await;
+      let _ = child.wait().await;
+      let _ = stdout_task.await;
+      let _ = stderr_task.await;
+      return Err(agent_wait_timeout_message(saw_output, silent_for, total_runtime));
+    }
+
+    if !emitted_delay_notice && total_runtime >= Duration::from_secs(AGENT_DELAY_NOTICE_SECS) {
+      emitted_delay_notice = true;
+      if let Some(progress) = progress {
+        progress.emit("agent-delayed");
+      }
+    }
+
+    if !emitted_long_wait_notice && total_runtime >= Duration::from_secs(AGENT_LONG_WAIT_NOTICE_SECS) {
+      emitted_long_wait_notice = true;
+      if let Some(progress) = progress {
+        progress.emit("agent-long-wait");
+      }
+    }
+
+    let next_poll = now + Duration::from_millis(120);
+    tokio::select! {
+      maybe_line = rx.recv() => {
+        if let Some(line) = maybe_line {
+          last_activity_at = Instant::now();
+          if !saw_output {
+            saw_output = true;
+            if let Some(progress) = progress {
+              progress.emit("agent-output");
+            }
+          }
+          push_command_output_line(line, &mut stdout_lines, &mut stderr_lines);
+          let detail = command_output_detail_from_lines(&stdout_lines, &stderr_lines);
+          if is_openclaw_reauth_required(&detail) || is_openclaw_terminal_agent_error(&detail) {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(normalize_openclaw_command_error(&detail));
+          }
+        }
+      }
+      _ = tokio::time::sleep_until(next_poll) => {}
+    }
+
+    if let Some(status) = child
+      .try_wait()
+      .map_err(|error| format!("{launch_context}\n\n{error}"))?
+    {
+      let _ = stdout_task.await;
+      let _ = stderr_task.await;
+      while let Ok(line) = rx.try_recv() {
+        push_command_output_line(line, &mut stdout_lines, &mut stderr_lines);
+      }
+
+      return Ok(std::process::Output {
+        status,
+        stdout: stdout_lines.join("\n").into_bytes(),
+        stderr: stderr_lines.join("\n").into_bytes(),
+      });
+    }
+  }
+}
+
+async fn read_command_lines<R>(
+  reader: R,
+  is_stderr: bool,
+  tx: mpsc::UnboundedSender<CommandOutputLine>,
+) where
+  R: tokio::io::AsyncRead + Unpin,
+{
+  let mut lines = BufReader::new(reader).lines();
+  while let Ok(Some(line)) = lines.next_line().await {
+    let payload = if is_stderr {
+      CommandOutputLine::Stderr(line)
+    } else {
+      CommandOutputLine::Stdout(line)
+    };
+
+    if tx.send(payload).is_err() {
+      break;
+    }
+  }
+}
+
+fn push_command_output_line(
+  line: CommandOutputLine,
+  stdout_lines: &mut Vec<String>,
+  stderr_lines: &mut Vec<String>,
+) {
+  match line {
+    CommandOutputLine::Stdout(value) => stdout_lines.push(value),
+    CommandOutputLine::Stderr(value) => stderr_lines.push(value),
+  }
 }
 
 fn build_docker_exec_command(
@@ -2407,13 +2763,14 @@ fn write_remote_gateway_temp_config(resolved: &ResolvedManagerConfig) -> Result<
       .is_some(),
   )?;
 
-  let mut value = read_json5_file::<serde_json::Value>(&openclaw_config_path())
-    .or_else(|| read_json5_file::<serde_json::Value>(&clawdbot_config_path()))
-    .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+  let (persist_path, mut value) = load_runtime_config_template();
   if !value.is_object() {
     value = serde_json::Value::Object(Default::default());
   }
 
+  let original_gateway = value
+    .as_object()
+    .and_then(|root| root.get("gateway").cloned());
   let root = value.as_object_mut().expect("remote config root should be an object");
   let agents = ensure_json_object(root, "agents");
   let defaults = ensure_json_object(agents, "defaults");
@@ -2444,7 +2801,11 @@ fn write_remote_gateway_temp_config(resolved: &ResolvedManagerConfig) -> Result<
   ));
   let raw = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
   fs::write(&temp_path, format!("{raw}\n")).map_err(|error| error.to_string())?;
-  Ok(TemporaryConfigFile { path: temp_path })
+  Ok(TemporaryConfigFile {
+    path: temp_path,
+    persist_path,
+    original_gateway,
+  })
 }
 
 fn ensure_json_object<'a>(
@@ -2477,6 +2838,109 @@ fn validate_remote_gateway_url(raw: &str, has_token: bool) -> Result<String, Str
   }
 
   Ok(parsed.to_string())
+}
+
+fn load_runtime_config_template() -> (PathBuf, serde_json::Value) {
+  let openclaw_path = openclaw_config_path();
+  if let Some(value) = read_json5_file::<serde_json::Value>(&openclaw_path) {
+    return (openclaw_path, value);
+  }
+
+  let clawdbot_path = clawdbot_config_path();
+  if let Some(value) = read_json5_file::<serde_json::Value>(&clawdbot_path) {
+    return (clawdbot_path, value);
+  }
+
+  (openclaw_path, serde_json::Value::Object(Default::default()))
+}
+
+fn prepare_persisted_runtime_config(
+  mut value: serde_json::Value,
+  original_gateway: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+  let root = value.as_object_mut()?;
+  match original_gateway {
+    Some(gateway) => {
+      root.insert("gateway".to_string(), gateway.clone());
+    }
+    None => {
+      root.remove("gateway");
+    }
+  }
+
+  Some(value)
+}
+
+fn normalize_openclaw_command_error(detail: &str) -> String {
+  if is_openclaw_reauth_required(detail) {
+    return "OpenClaw needs you to sign in to OpenAI Codex again. Re-authenticate in the OpenClaw CLI on this machine, then retry the quest.".to_string();
+  }
+
+  detail.trim().to_string()
+}
+
+fn agent_wait_timeout_message(saw_output: bool, silent_for: Duration, total_runtime: Duration) -> String {
+  if total_runtime >= Duration::from_secs(AGENT_MAX_RUNTIME_SECS) {
+    return "OpenClaw stayed busy for over 15 minutes without finishing. Claw Quest stopped waiting, though the quest may still be underway.".to_string();
+  }
+
+  if saw_output {
+    format!(
+      "OpenClaw went silent for over {} minutes before finishing. Claw Quest stopped waiting for new word.",
+      (silent_for.as_secs().max(60)) / 60
+    )
+  } else {
+    format!(
+      "OpenClaw gave no sign for over {} minutes. Claw Quest stopped waiting, though the quest may still be underway.",
+      (silent_for.as_secs().max(60)) / 60
+    )
+  }
+}
+
+fn is_retryable_openclaw_runner_error(detail: &str) -> bool {
+  let normalized = detail.trim().to_ascii_lowercase();
+  if normalized.is_empty() || is_openclaw_reauth_required(detail) {
+    return false;
+  }
+
+  normalized.contains("no running openclaw gateway")
+    || normalized.contains("could not reach the saved openclaw gateway")
+    || normalized.contains("could not reach the docker openclaw gateway")
+    || normalized.contains("errorcode=unavailable")
+    || normalized.contains("failovererror")
+    || normalized.contains("closed before connect")
+    || normalized.contains("handshake timeout")
+    || normalized.contains("connection refused")
+    || normalized.contains("actively refused")
+    || normalized.contains("econnrefused")
+    || normalized.contains("could not launch the openclaw command")
+    || normalized.contains("could not launch docker exec")
+    || normalized.contains("the system cannot find the file specified")
+    || normalized.contains("os error 2")
+}
+
+fn is_openclaw_reauth_required(detail: &str) -> bool {
+  let normalized = detail.trim().to_ascii_lowercase();
+  if normalized.is_empty() {
+    return false;
+  }
+
+  normalized.contains("refresh_token_reused")
+    || normalized.contains("your refresh token has already been used to generate a new access token")
+    || (normalized.contains("oauth token refresh failed") && normalized.contains("re-authenticate"))
+    || (normalized.contains("failed to refresh oauth token") && normalized.contains("openai-codex"))
+}
+
+fn is_openclaw_terminal_agent_error(detail: &str) -> bool {
+  let normalized = detail.trim().to_ascii_lowercase();
+  if normalized.is_empty() {
+    return false;
+  }
+
+  normalized.contains("errorcode=")
+    && normalized.contains("errormessage=")
+    && normalized.contains("runid=")
+    && (normalized.contains("res ✗ agent") || normalized.contains("failovererror"))
 }
 
 fn command_safe_path(path: &Path) -> PathBuf {
@@ -2523,6 +2987,20 @@ fn command_output_detail(output: &std::process::Output) -> String {
   }
 
   let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+  if !stdout.is_empty() {
+    return stdout;
+  }
+
+  String::new()
+}
+
+fn command_output_detail_from_lines(stdout_lines: &[String], stderr_lines: &[String]) -> String {
+  let stderr = stderr_lines.join("\n").trim().to_string();
+  if !stderr.is_empty() {
+    return stderr;
+  }
+
+  let stdout = stdout_lines.join("\n").trim().to_string();
   if !stdout.is_empty() {
     return stdout;
   }
@@ -3032,4 +3510,117 @@ fn current_time_ms() -> i64 {
 fn read_json5_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
   let raw = fs::read_to_string(path).ok()?;
   json5::from_str::<T>(&raw).ok()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn detects_reauth_required_for_reused_refresh_tokens() {
+    let detail = r#"OAuth token refresh failed for openai-codex.
+Your refresh token has already been used to generate a new access token.
+code: refresh_token_reused"#;
+
+    assert!(is_openclaw_reauth_required(detail));
+    assert_eq!(
+      normalize_openclaw_command_error(detail),
+      "OpenClaw needs you to sign in to OpenAI Codex again. Re-authenticate in the OpenClaw CLI on this machine, then retry the quest."
+    );
+  }
+
+  #[test]
+  fn marks_gateway_unavailable_failures_as_retryable() {
+    let detail =
+      "[ws] res agent errorCode=UNAVAILABLE errorMessage=FailoverError: gateway unavailable runId=123";
+
+    assert!(is_retryable_openclaw_runner_error(detail));
+  }
+
+  #[test]
+  fn does_not_retry_reauth_failures() {
+    let detail =
+      "OpenClaw needs you to sign in to OpenAI Codex again. Re-authenticate in the OpenClaw CLI on this machine, then retry the quest.";
+
+    assert!(!is_retryable_openclaw_runner_error(detail));
+  }
+
+  #[test]
+  fn builds_silence_timeout_message_before_any_output() {
+    let message = agent_wait_timeout_message(false, Duration::from_secs(AGENT_SILENCE_TIMEOUT_SECS), Duration::from_secs(75));
+
+    assert!(message.contains("gave no sign"));
+    assert!(message.contains("stopped waiting"));
+  }
+
+  #[test]
+  fn builds_absolute_timeout_message_for_very_long_runs() {
+    let message = agent_wait_timeout_message(true, Duration::from_secs(20), Duration::from_secs(AGENT_MAX_RUNTIME_SECS));
+
+    assert!(message.contains("over 15 minutes"));
+  }
+
+  #[test]
+  fn restores_original_gateway_while_preserving_other_runtime_updates() {
+    let value = serde_json::json!({
+      "auth": {
+        "providers": {
+          "openai-codex": {
+            "refreshToken": "new-refresh-token"
+          }
+        }
+      },
+      "gateway": {
+        "mode": "remote",
+        "remote": {
+          "url": "wss://example.test/gateway",
+          "token": "temporary-token"
+        }
+      }
+    });
+    let original_gateway = serde_json::json!({
+      "mode": "local"
+    });
+
+    let persisted = prepare_persisted_runtime_config(value, Some(&original_gateway))
+      .expect("config should stay object-shaped");
+
+    assert_eq!(persisted["gateway"], original_gateway);
+    assert_eq!(
+      persisted["auth"]["providers"]["openai-codex"]["refreshToken"],
+      "new-refresh-token"
+    );
+  }
+
+  #[test]
+  fn removes_temporary_gateway_when_original_config_had_none() {
+    let value = serde_json::json!({
+      "auth": {
+        "providers": {
+          "openai-codex": {
+            "refreshToken": "new-refresh-token"
+          }
+        }
+      },
+      "gateway": {
+        "mode": "remote"
+      }
+    });
+
+    let persisted =
+      prepare_persisted_runtime_config(value, None).expect("config should stay object-shaped");
+
+    assert!(persisted.get("gateway").is_none());
+    assert_eq!(
+      persisted["auth"]["providers"]["openai-codex"]["refreshToken"],
+      "new-refresh-token"
+    );
+  }
+
+  #[test]
+  fn detects_terminal_gateway_agent_errors() {
+    let detail = "[ws] ⇄ res ✗ agent errorCode=UNAVAILABLE errorMessage=FailoverError: OAuth token refresh failed runId=123 error=FailoverError";
+
+    assert!(is_openclaw_terminal_agent_error(detail));
+  }
 }

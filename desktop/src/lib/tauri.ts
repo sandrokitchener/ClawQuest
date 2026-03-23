@@ -114,6 +114,26 @@ export type QuestOutcome = {
   reply: string
 }
 
+export type QuestProgressStage =
+  | 'remote-config'
+  | 'runner-cached'
+  | 'runner-discovery'
+  | 'runner-direct'
+  | 'gateway-fallback'
+  | 'gateway-health'
+  | 'runner-fallback'
+  | 'docker-direct'
+  | 'docker-health'
+  | 'docker-retry'
+  | 'agent-working'
+  | 'agent-delayed'
+  | 'agent-long-wait'
+  | 'agent-output'
+
+export type QuestProgressEvent = {
+  stage: QuestProgressStage | string
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
@@ -182,6 +202,15 @@ export async function sendOpenClawPrompt(config: ManagerConfig | undefined, prom
   return invoke<QuestOutcome>('send_openclaw_prompt', {
     config,
     prompt,
+  })
+}
+
+export async function listenForQuestProgress(
+  listener: (event: QuestProgressEvent) => void,
+) {
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<QuestProgressEvent>('clawquest://quest-progress', (event) => {
+    listener(event.payload)
   })
 }
 
