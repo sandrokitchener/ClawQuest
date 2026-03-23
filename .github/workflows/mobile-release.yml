@@ -55,6 +55,9 @@ jobs:
         working-directory: desktop
         run: bunx tauri android build --apk --target aarch64 --ci
 
+      - name: List APK outputs
+        run: find desktop -path "*/outputs/apk/*" -type f -name "*.apk" -print
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -69,4 +72,4 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            desktop/src-tauri/gen/android/app/build/outputs/apk/arm64/release/*.apk
+            desktop/**/outputs/apk/**/*.apk
