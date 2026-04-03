@@ -7,6 +7,7 @@ import { ClientOnly } from '../components/ClientOnly'
 import { DeploymentDriftBanner } from '../components/DeploymentDriftBanner'
 import { Footer } from '../components/Footer'
 import Header from '../components/Header'
+import { MobileBackgroundMusic } from '../components/MobileBackgroundMusic'
 import { isDevRuntime } from '../lib/runtimeEnv'
 import { getSiteDescription, getSiteMode, getSiteName, getSiteUrlForMode } from '../lib/site'
 
@@ -119,6 +120,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           </div>
           <ClientOnly>
             <Analytics />
+            <MobileBackgroundMusic />
             {isDevRuntime() ? (
               <TanStackDevtools
                 config={{

@@ -23,6 +23,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
@@ -114,6 +115,25 @@ type CatalogCacheEntry = {
   cachedAt: number
   items: RegistrySkill[]
 }
+type RefreshStateResult = {
+  state: ManagerState | null
+  errorMessage: string | null
+}
+type GatewayFailureAction = 'link' | 'refresh' | 'quest'
+
+type DemoSkillSeed = {
+  slug: string
+  displayName: string
+  summary: string
+  version: string
+  downloads: number
+  rating: number
+  score: number
+  updatedAt: number
+  securityStatus?: InstalledSkillSecurity['status']
+  securitySummary?: string
+  reasonCodes?: string[]
+}
 
 const EMPTY_DRAFT: DraftConfig = {
   workdir: '',
@@ -128,6 +148,8 @@ const EMPTY_DRAFT: DraftConfig = {
 }
 
 const clawQuestWordmarkUrl = new URL('./assets/claw-quest-title.png', import.meta.url).href
+const BACKGROUND_MUSIC_URL = new URL('./assets/crpg-loop.wav', import.meta.url).href
+const BACKGROUND_MUSIC_VOLUME = 0.18
 const UI_SOUND_URLS: Record<UiSound, string> = {
   blip: new URL('./assets/blip.wav', import.meta.url).href,
   coin: new URL('./assets/coin.wav', import.meta.url).href,
@@ -171,8 +193,9 @@ const CATALOG_SEARCH_DEBOUNCE_MS = 420
 const CATALOG_CACHE_TTL_MS = 60_000
 const CATALOG_CACHE_MAX_ENTRIES = 18
 const CATALOG_RATE_LIMIT_FALLBACK_MS = 30_000
-const QUEST_BUBBLE_PROGRESS_MS = 5200
-const QUEST_PROGRESS_EVENT_MIN_MS = 4500
+const QUEST_BUBBLE_PROGRESS_MS = 10_400
+const QUEST_BUBBLE_ROTATION_GUARD_MS = 1800
+const QUEST_PROGRESS_EVENT_MIN_MS = 9000
 const MOBILE_SHELL_BREAKPOINT_PX = 860
 const MOBILE_PREVIEW_QUEST_DELAY_MS = 900
 const AGENT_RACE_OPTIONS: AgentRace[] = ['elf', 'orc', 'human', 'halfling', 'tiefling', 'goblin']
@@ -188,6 +211,124 @@ const SKILL_RARITY_LABELS: Record<SkillRarity, string> = {
   epic: 'Epic',
   legendary: 'Legendary',
 }
+
+const FEATURE_DEMO_QUERY_KEY = 'demo'
+const FEATURE_DEMO_QUERY_VALUE = 'feature-video'
+const FEATURE_DEMO_SECURITY_SUMMARY = 'Preview scan complete. No issues found.'
+const FEATURE_DEMO_INSTALLED_SEEDS: DemoSkillSeed[] = [
+  {
+    slug: 'search-scout',
+    displayName: 'Search Scout',
+    summary: 'Charts docs, search results, and references before the quest begins.',
+    version: '2.4.1',
+    downloads: 38120,
+    rating: 4.9,
+    score: 96,
+    updatedAt: Date.parse('2026-03-22T18:20:00Z'),
+  },
+  {
+    slug: 'transcript-helper',
+    displayName: 'Transcript Helper',
+    summary: 'Turns rough notes and voice dumps into tidy briefings.',
+    version: '1.4.7',
+    downloads: 12990,
+    rating: 4.5,
+    score: 84,
+    updatedAt: Date.parse('2026-03-17T16:00:00Z'),
+  },
+  {
+    slug: 'web-fetch-blade',
+    displayName: 'Web Fetch Blade',
+    summary: 'Cuts through page fetches, scraping passes, and link checks.',
+    version: '1.8.3',
+    downloads: 29540,
+    rating: 4.7,
+    score: 91,
+    updatedAt: Date.parse('2026-03-21T15:05:00Z'),
+  },
+  {
+    slug: 'repo-guard',
+    displayName: 'Repo Guard',
+    summary: 'Keeps pull requests, auth flows, and repo health under watch.',
+    version: '3.0.0',
+    downloads: 27410,
+    rating: 4.8,
+    score: 94,
+    updatedAt: Date.parse('2026-03-20T13:40:00Z'),
+  },
+  {
+    slug: 'forge-plate',
+    displayName: 'Forge Plate',
+    summary: 'Handles build fixes, patches, and repo chores without losing momentum.',
+    version: '5.1.2',
+    downloads: 33210,
+    rating: 4.9,
+    score: 97,
+    updatedAt: Date.parse('2026-03-22T09:10:00Z'),
+  },
+  {
+    slug: 'route-runner',
+    displayName: 'Route Runner',
+    summary: 'Keeps deploy routes, sync jobs, and workspace travel light on their feet.',
+    version: '1.6.4',
+    downloads: 18620,
+    rating: 4.6,
+    score: 88,
+    updatedAt: Date.parse('2026-03-18T20:45:00Z'),
+  },
+  {
+    slug: 'prompt-helper',
+    displayName: 'Prompt Helper',
+    summary: 'Shapes clean prompts, answer notes, and chat-ready summaries.',
+    version: '2.0.5',
+    downloads: 24180,
+    rating: 4.8,
+    score: 90,
+    updatedAt: Date.parse('2026-03-19T11:30:00Z'),
+  },
+]
+const FEATURE_DEMO_CATALOG_SEEDS: DemoSkillSeed[] = [
+  {
+    slug: 'prompt-polisher',
+    displayName: 'Prompt Polisher',
+    summary: 'Tightens quest prompts and formats replies before they leave camp.',
+    version: '1.4.0',
+    downloads: 41840,
+    rating: 4.9,
+    score: 95,
+    updatedAt: Date.parse('2026-03-23T08:10:00Z'),
+  },
+  {
+    slug: 'audit-ward',
+    displayName: 'Audit Ward',
+    summary: 'Adds extra guard rails around security checks, tokens, and repo access.',
+    version: '3.2.1',
+    downloads: 21450,
+    rating: 4.7,
+    score: 89,
+    updatedAt: Date.parse('2026-03-22T12:25:00Z'),
+  },
+  {
+    slug: 'crawler-bow',
+    displayName: 'Crawler Bow',
+    summary: 'Scouts docs, pages, and crawling runs when the quest calls for range.',
+    version: '2.3.6',
+    downloads: 26890,
+    rating: 4.6,
+    score: 87,
+    updatedAt: Date.parse('2026-03-21T06:55:00Z'),
+  },
+  {
+    slug: 'deploy-sandals',
+    displayName: 'Deploy Sandals',
+    summary: 'Speeds route changes, sync passes, and deployment marches.',
+    version: '1.1.9',
+    downloads: 16740,
+    rating: 4.4,
+    score: 81,
+    updatedAt: Date.parse('2026-03-20T18:00:00Z'),
+  },
+]
 
 const DEV_KEYWORDS = [
   'build',
@@ -587,6 +728,9 @@ const MARKET_BAG_PIXEL_RECTS: ColorPixelRect[] = [
 export default function App() {
   const runtime = isTauriRuntime()
   const [managerState, setManagerState] = useState<ManagerState | null>(null)
+  const [demoInstalled, setDemoInstalled] = useState<InstalledSkill[]>(() =>
+    isFeatureDemoMode() ? buildFeatureDemoInstalledSkills() : [],
+  )
   const [catalog, setCatalog] = useState<RegistrySkill[]>([])
   const [draftConfig, setDraftConfig] = useState<DraftConfig>(() => mergeStoredConnectionSettings(EMPTY_DRAFT))
   const [appliedConfig, setAppliedConfig] = useState<ManagerConfig | undefined>(() =>
@@ -653,9 +797,12 @@ export default function App() {
   const toolsPaneScrollFrameRef = useRef<number | null>(null)
   const shellViewportRef = useRef<HTMLElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
+  const backgroundMusicRef = useRef<HTMLAudioElement | null>(null)
+  const audioMutedRef = useRef(audioMuted)
 
   const state = managerState ?? EMPTY_STATE
   const previewOnlyMode = !runtime || isMobileShell
+  const featureDemoMode = !runtime && !isMobileShell && isFeatureDemoMode()
   const installedSlugs = new Set(state.installed.map((skill) => skill.slug))
   const readySkills = state.installed.filter((skill) => skill.status === 'ready')
   const riskyCount = readySkills.filter((skill) => isRiskyStatus(skill.security.status)).length
@@ -735,7 +882,15 @@ export default function App() {
   }, [slotPreferences])
 
   useEffect(() => {
+    audioMutedRef.current = audioMuted
     writeAudioMuted(audioMuted)
+
+    if (audioMuted) {
+      pauseBackgroundMusic()
+      return
+    }
+
+    startBackgroundMusic()
   }, [audioMuted])
 
   useEffect(() => {
@@ -868,7 +1023,10 @@ export default function App() {
 
     let index = 1
     questBubbleIntervalRef.current = window.setInterval(() => {
-      if (Date.now() - questBubbleUpdatedAtRef.current < QUEST_BUBBLE_PROGRESS_MS - 900) {
+      if (
+        Date.now() - questBubbleUpdatedAtRef.current <
+        QUEST_BUBBLE_PROGRESS_MS - QUEST_BUBBLE_ROTATION_GUARD_MS
+      ) {
         return
       }
 
@@ -905,6 +1063,50 @@ export default function App() {
         }
       }
       soundRefs.current = {}
+    }
+  }, [])
+
+  useEffect(() => {
+    const audio = new Audio(BACKGROUND_MUSIC_URL)
+    audio.preload = 'auto'
+    audio.loop = true
+    audio.volume = BACKGROUND_MUSIC_VOLUME
+    backgroundMusicRef.current = audio
+
+    const handleUserActivation = () => {
+      if (audioMutedRef.current) {
+        return
+      }
+
+      startBackgroundMusic()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        pauseBackgroundMusic()
+        return
+      }
+
+      if (!audioMutedRef.current) {
+        startBackgroundMusic()
+      }
+    }
+
+    window.addEventListener('pointerdown', handleUserActivation, { passive: true })
+    window.addEventListener('keydown', handleUserActivation)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    if (!audioMutedRef.current && !document.hidden) {
+      startBackgroundMusic()
+    }
+
+    return () => {
+      window.removeEventListener('pointerdown', handleUserActivation)
+      window.removeEventListener('keydown', handleUserActivation)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      audio.pause()
+      audio.src = ''
+      backgroundMusicRef.current = null
     }
   }, [])
 
@@ -999,6 +1201,20 @@ export default function App() {
     }
   }
 
+  function startBackgroundMusic() {
+    const audio = backgroundMusicRef.current
+    if (!audio || audioMutedRef.current || document.hidden || !audio.paused) {
+      return
+    }
+
+    audio.volume = BACKGROUND_MUSIC_VOLUME
+    void audio.play().catch(() => {})
+  }
+
+  function pauseBackgroundMusic() {
+    backgroundMusicRef.current?.pause()
+  }
+
   function queueShellScrollToTop() {
     if (toolsPaneScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(toolsPaneScrollFrameRef.current)
@@ -1050,18 +1266,18 @@ export default function App() {
     })
   }
 
-  async function refreshState(nextConfig?: ManagerConfig) {
+  async function refreshState(nextConfig?: ManagerConfig): Promise<RefreshStateResult> {
     setLoadingState(true)
     setError('')
 
     try {
       if (previewOnlyMode) {
-        const nextState = buildPreviewManagerState(nextConfig, [])
+        const nextState = buildPreviewManagerState(nextConfig, featureDemoMode ? demoInstalled : [])
         const nextDraft = mergeDraftWithState(nextState, nextConfig ? draftFromConfig(nextConfig) : draftConfig)
         setManagerState(nextState)
         setDraftConfig(nextDraft)
         setAppliedConfig(configFromDraft(nextDraft))
-        return nextState
+        return { state: nextState, errorMessage: null }
       }
 
       const nextState = await loadManagerState(nextConfig)
@@ -1069,10 +1285,21 @@ export default function App() {
       setManagerState(nextState)
       setDraftConfig(nextDraft)
       setAppliedConfig(configFromDraft(nextDraft))
-      return nextState
+      return { state: nextState, errorMessage: null }
     } catch (caughtError) {
-      setError(normalizeCommandError(caughtError))
-      return null
+      const rawMessage = normalizeCommandError(caughtError)
+      const connectionMode = nextConfig?.connectionMode ?? draftConfig.connectionMode
+      const errorMessage =
+        connectionMode === 'remote'
+          ? formatGatewayConnectionErrorMessage(
+              rawMessage,
+              nextConfig?.gatewayUrl ?? draftConfig.gatewayUrl,
+              'refresh',
+            )
+          : rawMessage
+
+      setError(errorMessage)
+      return { state: null, errorMessage }
     } finally {
       setLoadingState(false)
     }
@@ -1117,9 +1344,10 @@ export default function App() {
     try {
       if (!runtime) {
         if (requestId === catalogRequestRef.current) {
-          setCatalog([])
+          setCatalog(featureDemoMode ? buildFeatureDemoCatalog(trimmedQuery, nextSort) : [])
           setCatalogIssue('')
           setCatalogCooldownUntil(null)
+          setError((current) => (parseCatalogRateLimit(current) ? '' : current))
         }
         return
       }
@@ -1160,19 +1388,30 @@ export default function App() {
 
   async function applyDraft(nextDraft: DraftConfig, successMessage: string) {
     setDraftConfig(nextDraft)
-    const nextState = await refreshState(configFromDraft(nextDraft))
+    const { state: nextState, errorMessage } = await refreshState(configFromDraft(nextDraft))
     if (nextState) {
       playUiSound('blip')
       setNotice(successMessage)
-      return true
+      return { applied: true, errorMessage: null }
     }
 
-    return false
+    return { applied: false, errorMessage }
   }
 
   async function handleRefresh() {
     const nextConfig = appliedConfig ?? configFromDraft(draftConfig)
-    const nextState = await refreshState(nextConfig)
+    if (isMobileShell && nextConfig?.connectionMode === 'remote') {
+      const gatewayDraftIssue = validateGatewayDraftInput({
+        gatewayUrl: nextConfig.gatewayUrl ?? draftConfig.gatewayUrl,
+        gatewayToken: nextConfig.gatewayToken ?? draftConfig.gatewayToken,
+      })
+      if (gatewayDraftIssue) {
+        setError(gatewayDraftIssue)
+        return
+      }
+    }
+
+    const { state: nextState } = await refreshState(nextConfig)
     await refreshCatalog(nextConfig, searchText, sort, { force: true })
 
     if (nextState) {
@@ -1227,11 +1466,17 @@ export default function App() {
   }
 
   function handleToggleAudioMuted() {
-    setAudioMuted((current) => {
-      const next = !current
-      setNotice(next ? 'Audio muted.' : 'Audio unmuted.')
-      return next
-    })
+    const next = !audioMuted
+    setAudioMuted(next)
+    setNotice(next ? 'Audio muted.' : 'Audio unmuted.')
+
+    if (next) {
+      pauseBackgroundMusic()
+    } else {
+      audioMutedRef.current = false
+      startBackgroundMusic()
+    }
+
     setSettingsOpen(false)
   }
 
@@ -1287,8 +1532,9 @@ export default function App() {
   }
 
   async function handleCompleteMobileSetup() {
-    if (!draftConfig.gatewayUrl.trim()) {
-      setMobileSetupError('Enter your OpenClaw Gateway URL first.')
+    const gatewayDraftIssue = validateGatewayDraftInput(draftConfig)
+    if (gatewayDraftIssue) {
+      setMobileSetupError(gatewayDraftIssue)
       setMobileSetupStep(1)
       return
     }
@@ -1302,9 +1548,19 @@ export default function App() {
     setMobileSetupError('')
 
     try {
-      const applied = await applyDraft(nextDraft, 'Gateway linked for the mobile shell.')
+      const { applied, errorMessage } = await applyDraft(
+        nextDraft,
+        'Gateway linked for the mobile shell.',
+      )
       if (!applied) {
-        setMobileSetupError('The gateway profile could not be saved yet.')
+        setMobileSetupError(
+          errorMessage ??
+            formatGatewayConnectionErrorMessage(
+              'The gateway profile could not be saved yet.',
+              nextDraft.gatewayUrl,
+              'link',
+            ),
+        )
         return
       }
 
@@ -1337,6 +1593,122 @@ export default function App() {
     updateManualHover(event.clientX, event.clientY, payload)
   }
 
+  async function handleQuestSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const prompt = questDraft.trim()
+
+    if (!prompt) {
+      setQuestError('Enter a quest prompt first.')
+      return
+    }
+
+    if (isMobileShell) {
+      const gatewayDraftIssue = validateGatewayDraftInput(draftConfig)
+      if (gatewayDraftIssue) {
+        setQuestError(gatewayDraftIssue)
+        setQuestMood('error')
+        setQuestBubble('The gate is not ready.')
+        return
+      }
+    }
+
+    setQuestBusy(true)
+    setActiveQuestPrompt(prompt)
+    setQuestError('')
+    setQuestMood('busy')
+    setQuestBubble(questDepartureBubble(prompt, displayedAgentClass, activeConnectionMode))
+    questProgressContextRef.current = {
+      agentClass: displayedAgentClass,
+      connectionMode: activeConnectionMode,
+      prompt,
+      busy: true,
+    }
+    setAvatarSpeaking(false)
+    playUiSound('questSend')
+
+    try {
+      if (previewOnlyMode) {
+        await new Promise((resolve) => window.setTimeout(resolve, MOBILE_PREVIEW_QUEST_DELAY_MS))
+        const nextQuestCount = questsCompleted + 1
+        const previousLevel = progress.level
+        const nextProgress = deriveAdventurerProgress(nextQuestCount)
+        const replyNotice = isMobileShell
+          ? 'Gateway profile saved. Live mobile quest dispatch is the next forge step.'
+          : 'Quest preview only in browser mode.'
+
+        setQuestsCompleted(nextQuestCount)
+        writeQuestProgress(nextQuestCount)
+        setQuestBubble(returnedBubbleForClass(displayedAgentClass))
+        setQuestMood('returned')
+        setActiveQuestPrompt('')
+        questProgressContextRef.current = {
+          ...questProgressContextRef.current,
+          busy: false,
+          prompt: '',
+        }
+        triggerAvatarSpeaking()
+        setQuestDraft('')
+        playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
+        setNotice(
+          nextProgress.level > previousLevel
+            ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
+            : replyNotice,
+        )
+        return
+      }
+
+      const outcome = await sendOpenClawPrompt(appliedConfig, prompt)
+      const nextQuestCount = questsCompleted + 1
+      const previousLevel = progress.level
+      const nextProgress = deriveAdventurerProgress(nextQuestCount)
+      const replyNotice = formatQuestReplyForNotice(outcome.reply, displayedAgentClass)
+      setQuestsCompleted(nextQuestCount)
+      writeQuestProgress(nextQuestCount)
+      setQuestBubble(returnedBubbleForClass(displayedAgentClass))
+      setQuestMood('returned')
+      setActiveQuestPrompt('')
+      questProgressContextRef.current = {
+        ...questProgressContextRef.current,
+        busy: false,
+        prompt: '',
+      }
+      triggerAvatarSpeaking()
+      setQuestDraft('')
+      playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
+      setNotice(
+        nextProgress.level > previousLevel
+          ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
+          : replyNotice,
+      )
+    } catch (caughtError) {
+      const rawError = normalizeCommandError(caughtError)
+      const nextError =
+        activeConnectionMode === 'remote'
+          ? formatGatewayConnectionErrorMessage(
+              rawError,
+              appliedConfig?.gatewayUrl ?? draftConfig.gatewayUrl,
+              'quest',
+            )
+          : rawError
+      setQuestError(nextError)
+      setQuestBubble(formatQuestErrorBubble(nextError, prompt, displayedAgentClass))
+      setQuestMood('error')
+      setActiveQuestPrompt('')
+      questProgressContextRef.current = {
+        ...questProgressContextRef.current,
+        busy: false,
+        prompt: '',
+      }
+      triggerAvatarSpeaking()
+    } finally {
+      questProgressContextRef.current = {
+        ...questProgressContextRef.current,
+        busy: false,
+      }
+      setQuestBusy(false)
+    }
+  }
+
   function assignSkillToSlot(slug: string, slot: GearSlot) {
     setSlotPreferences((current) => {
       const next: SlotPreferenceMap = { ...current }
@@ -1357,6 +1729,38 @@ export default function App() {
     clearDragState()
 
     if (previewOnlyMode) {
+      if (featureDemoMode) {
+        if (demoInstalled.some((entry) => entry.slug === skill.slug)) {
+          setNotice(`${skill.displayName} is already installed.`)
+          return
+        }
+
+        setMobileShopOpen(false)
+        setWorkingSlug(skill.slug)
+
+        try {
+          await delay(520)
+          const nextInstalled = [...demoInstalled, buildFeatureDemoInstalledSkill(skill, demoInstalled.length)]
+          const nextState = buildPreviewManagerState(appliedConfig, nextInstalled)
+          const nextDraft = mergeDraftWithState(nextState, draftConfig)
+          setDemoInstalled(nextInstalled)
+          setManagerState(nextState)
+          setDraftConfig(nextDraft)
+          setAppliedConfig(configFromDraft(nextDraft))
+
+          if (preferredSlot) {
+            assignSkillToSlot(skill.slug, preferredSlot)
+          }
+
+          playUiSound('coin')
+          setNotice(`Installed ${skill.displayName}.`)
+        } finally {
+          setWorkingSlug(null)
+        }
+
+        return
+      }
+
       setMobileShopOpen(false)
       setNotice(
         isMobileShell
@@ -1407,6 +1811,27 @@ export default function App() {
     clearDragState()
 
     if (previewOnlyMode) {
+      if (featureDemoMode) {
+        setRemovingPath(skill.path)
+
+        try {
+          await delay(320)
+          const nextInstalled = demoInstalled.filter((entry) => entry.path !== skill.path)
+          const nextState = buildPreviewManagerState(appliedConfig, nextInstalled)
+          const nextDraft = mergeDraftWithState(nextState, draftConfig)
+          setDemoInstalled(nextInstalled)
+          setManagerState(nextState)
+          setDraftConfig(nextDraft)
+          setAppliedConfig(configFromDraft(nextDraft))
+          playUiSound('blip')
+          setNotice(`Removed ${skill.slug}.`)
+        } finally {
+          setRemovingPath(null)
+        }
+
+        return
+      }
+
       setNotice('The preview loadout is empty until OpenClaw is connected.')
       return
     }
@@ -1621,6 +2046,41 @@ export default function App() {
 
     await handleRemove(payload.skill)
   }
+
+  const questControls = (
+    <div className="quest-controls">
+      <form className="quest-console" onSubmit={handleQuestSubmit}>
+        <label className="quest-field">
+          <span>Quest prompt</span>
+          <textarea
+            ref={questInputRef}
+            disabled={questBusy}
+            onChange={(event) => setQuestDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                event.currentTarget.form?.requestSubmit()
+              }
+            }}
+            placeholder="Fix the build, scout the web, guard the repo..."
+            value={questDraft}
+            rows={1}
+          />
+        </label>
+        <button className="pixel-button pixel-button-primary" disabled={questBusy} type="submit">
+          {questBusy ? <LoaderCircle className="spin" size={16} /> : <MessageCircle size={16} />}
+          {questBusy ? 'Sending' : isMobileShell ? 'Preview Quest' : 'Quest'}
+        </button>
+      </form>
+
+      {questError ? (
+        <div className="quest-error">
+          <AlertTriangle size={16} />
+          <span>{questError}</span>
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <main
@@ -1864,6 +2324,8 @@ export default function App() {
 
           <section className={`board-pane center-pane ${dropZone === 'equip' ? 'board-pane-active' : ''}`}>
             <div className="portrait-stage">
+              {isMobileShell ? questControls : null}
+
               <div className={`portrait-card ${classTheme.cardClass}`}>
                 <div className="portrait-speech">
                   <div className={`quest-bubble quest-bubble-${questMood}`}>{questBubble}</div>
@@ -1946,147 +2408,19 @@ export default function App() {
 	                  <span className="class-card-summary">{classTheme.summary}</span>
 	                </div>
 
-	                {isMobileShell ? (
-	                  <div className={`mobile-prototype-note ${mobileGatewayReady ? 'mobile-prototype-note-linked' : ''}`}>
-	                    <Globe size={16} />
+                {isMobileShell ? (
+                  <div className={`mobile-prototype-note ${mobileGatewayReady ? 'mobile-prototype-note-linked' : ''}`}>
+                    <Globe size={16} />
 	                    <div>
 	                      <strong>{mobileGatewayReady ? 'Gateway linked' : 'Gateway setup pending'}</strong>
 	                      <span>
 	                        Browse the guild ledger below. The loadout stays empty until OpenClaw is actually connected.
 	                      </span>
-	                    </div>
-	                  </div>
-	                ) : null}
-
-	                <form
-	                  className="quest-console"
-                  onSubmit={async (event) => {
-                    event.preventDefault()
-                    const prompt = questDraft.trim()
-
-                    if (!prompt) {
-                      setQuestError('Enter a quest prompt first.')
-                      return
-                    }
-
-                    setQuestBusy(true)
-                    setActiveQuestPrompt(prompt)
-                    setQuestError('')
-                    setQuestMood('busy')
-                    setQuestBubble(questDepartureBubble(prompt, displayedAgentClass, activeConnectionMode))
-                    questProgressContextRef.current = {
-                      agentClass: displayedAgentClass,
-                      connectionMode: activeConnectionMode,
-                      prompt,
-                      busy: true,
-                    }
-                    setAvatarSpeaking(false)
-                    playUiSound('questSend')
-
-	                    try {
-	                      if (previewOnlyMode) {
-	                        await new Promise((resolve) => window.setTimeout(resolve, MOBILE_PREVIEW_QUEST_DELAY_MS))
-	                        const nextQuestCount = questsCompleted + 1
-	                        const previousLevel = progress.level
-	                        const nextProgress = deriveAdventurerProgress(nextQuestCount)
-	                        const replyNotice = isMobileShell
-	                          ? 'Gateway profile saved. Live mobile quest dispatch is the next forge step.'
-	                          : 'Quest preview only in browser mode.'
-
-	                        setQuestsCompleted(nextQuestCount)
-	                        writeQuestProgress(nextQuestCount)
-	                        setQuestBubble(returnedBubbleForClass(displayedAgentClass))
-	                        setQuestMood('returned')
-	                        setActiveQuestPrompt('')
-	                        questProgressContextRef.current = {
-	                          ...questProgressContextRef.current,
-	                          busy: false,
-	                          prompt: '',
-	                        }
-	                        triggerAvatarSpeaking()
-	                        setQuestDraft('')
-	                        playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-	                        setNotice(
-	                          nextProgress.level > previousLevel
-	                            ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
-	                            : replyNotice,
-	                        )
-	                        return
-	                      }
-
-	                      const outcome = await sendOpenClawPrompt(appliedConfig, prompt)
-                      const nextQuestCount = questsCompleted + 1
-                      const previousLevel = progress.level
-                      const nextProgress = deriveAdventurerProgress(nextQuestCount)
-                      const replyNotice = formatQuestReplyForNotice(outcome.reply, displayedAgentClass)
-                      setQuestsCompleted(nextQuestCount)
-                      writeQuestProgress(nextQuestCount)
-                      setQuestBubble(returnedBubbleForClass(displayedAgentClass))
-                      setQuestMood('returned')
-                      setActiveQuestPrompt('')
-                      questProgressContextRef.current = {
-                        ...questProgressContextRef.current,
-                        busy: false,
-                        prompt: '',
-                      }
-                      triggerAvatarSpeaking()
-                      setQuestDraft('')
-                      playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-                      setNotice(
-                        nextProgress.level > previousLevel
-                          ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
-                          : replyNotice,
-                      )
-                    } catch (caughtError) {
-                      const nextError = normalizeCommandError(caughtError)
-                      setQuestError(nextError)
-                      setQuestBubble(formatQuestErrorBubble(nextError, prompt, displayedAgentClass))
-                      setQuestMood('error')
-                      setActiveQuestPrompt('')
-                      questProgressContextRef.current = {
-                        ...questProgressContextRef.current,
-                        busy: false,
-                        prompt: '',
-                      }
-                      triggerAvatarSpeaking()
-                    } finally {
-                      questProgressContextRef.current = {
-                        ...questProgressContextRef.current,
-                        busy: false,
-                      }
-                      setQuestBusy(false)
-                    }
-                  }}
-                >
-                  <label className="quest-field">
-                    <span>Quest prompt</span>
-                    <textarea
-                      ref={questInputRef}
-                      disabled={questBusy}
-                      onChange={(event) => setQuestDraft(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.shiftKey) {
-                          event.preventDefault()
-                          event.currentTarget.form?.requestSubmit()
-                        }
-                      }}
-                      placeholder="Fix the build, scout the web, guard the repo..."
-                      value={questDraft}
-                      rows={1}
-                    />
-                  </label>
-	                  <button className="pixel-button pixel-button-primary" disabled={questBusy} type="submit">
-	                    {questBusy ? <LoaderCircle className="spin" size={16} /> : <MessageCircle size={16} />}
-	                    {questBusy ? 'Sending' : isMobileShell ? 'Preview Quest' : 'Quest'}
-	                  </button>
-	                </form>
-
-                {questError ? (
-                  <div className="quest-error">
-                    <AlertTriangle size={16} />
-                    <span>{questError}</span>
+                    </div>
                   </div>
                 ) : null}
+
+                {!isMobileShell ? questControls : null}
               </div>
             </div>
 
@@ -2500,11 +2834,14 @@ export default function App() {
                   <span>Gateway URL</span>
                   <input
                     onChange={(event) =>
-                      setDraftConfig((current) => ({
-                        ...current,
-                        connectionMode: 'remote',
-                        gatewayUrl: event.target.value,
-                      }))
+                      {
+                        setMobileSetupError('')
+                        setDraftConfig((current) => ({
+                          ...current,
+                          connectionMode: 'remote',
+                          gatewayUrl: event.target.value,
+                        }))
+                      }
                     }
                     placeholder="wss://your-gateway.example.com"
                     type="text"
@@ -2516,11 +2853,14 @@ export default function App() {
                   <span>Gateway token</span>
                   <input
                     onChange={(event) =>
-                      setDraftConfig((current) => ({
-                        ...current,
-                        connectionMode: 'remote',
-                        gatewayToken: event.target.value,
-                      }))
+                      {
+                        setMobileSetupError('')
+                        setDraftConfig((current) => ({
+                          ...current,
+                          connectionMode: 'remote',
+                          gatewayToken: event.target.value,
+                        }))
+                      }
                     }
                     placeholder="Optional token"
                     type="password"
@@ -3139,6 +3479,114 @@ function writeStoredConnectionSettings(draft: DraftConfig) {
       dockerWorkdir: draft.dockerWorkdir,
     }),
   )
+}
+
+function isFeatureDemoMode() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const searchParams = new URLSearchParams(window.location.search)
+  return searchParams.get(FEATURE_DEMO_QUERY_KEY) === FEATURE_DEMO_QUERY_VALUE
+}
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+function buildFeatureDemoCatalog(query: string, sort: BrowseSort) {
+  const normalizedQuery = query.trim().toLowerCase()
+  const filtered = FEATURE_DEMO_CATALOG_SEEDS.filter((seed) => {
+    if (!normalizedQuery) {
+      return true
+    }
+
+    const haystack = `${seed.slug} ${seed.displayName} ${seed.summary}`.toLowerCase()
+    return haystack.includes(normalizedQuery)
+  })
+
+  return filtered
+    .slice()
+    .sort((left, right) => compareFeatureDemoSeeds(left, right, sort))
+    .map((seed) => buildFeatureDemoRegistrySkill(seed))
+}
+
+function buildFeatureDemoInstalledSkills() {
+  return FEATURE_DEMO_INSTALLED_SEEDS.map((seed, index) => buildFeatureDemoInstalledSkill(seed, index))
+}
+
+function buildFeatureDemoRegistrySkill(seed: DemoSkillSeed): RegistrySkill {
+  return {
+    slug: seed.slug,
+    displayName: seed.displayName,
+    summary: seed.summary,
+    version: seed.version,
+    updatedAt: seed.updatedAt,
+    score: seed.score,
+    downloads: seed.downloads,
+    rating: seed.rating,
+  }
+}
+
+function buildFeatureDemoInstalledSkill(skill: DemoSkillSeed | RegistrySkill, index: number): InstalledSkill {
+  const securitySummary =
+    'securitySummary' in skill && typeof skill.securitySummary === 'string'
+      ? skill.securitySummary
+      : FEATURE_DEMO_SECURITY_SUMMARY
+  const securityStatus =
+    'securityStatus' in skill && typeof skill.securityStatus === 'string' ? skill.securityStatus : 'clean'
+  const reasonCodes =
+    'reasonCodes' in skill && Array.isArray(skill.reasonCodes) ? skill.reasonCodes : ['preview_scan_clean']
+  const skillDir = joinWindowsPath(joinWindowsPath('C:\\Users\\Player\\OpenClawWorkspace\\skills', skill.slug), 'SKILL.md')
+
+  return {
+    slug: skill.slug,
+    version: skill.version ?? '1.0.0',
+    installedAt: Date.parse('2026-03-23T09:00:00Z') + index * 60_000,
+    path: skillDir,
+    rootLabel: 'Workspace skills',
+    registry: 'https://clawhub.ai',
+    source: skill.displayName,
+    status: 'ready',
+    security: {
+      status: securityStatus,
+      summary: securitySummary,
+      checkedAt: Date.parse('2026-03-23T09:20:00Z'),
+      hasKnownIssues: false,
+      hasScanResult: true,
+      reasonCodes,
+      model: 'preview-demo',
+      virustotalUrl: null,
+      versionContext: 'installed',
+      sourceVersion: skill.version ?? '1.0.0',
+      matchesRequestedVersion: true,
+      scanners: [
+        {
+          name: 'Preview Shield',
+          status: securityStatus,
+          verdict: securityStatus === 'clean' ? 'verified' : securityStatus,
+          summary: securitySummary,
+          checkedAt: Date.parse('2026-03-23T09:20:00Z'),
+          confidence: 'high',
+          source: 'Feature demo',
+        },
+      ],
+    },
+  }
+}
+
+function compareFeatureDemoSeeds(left: DemoSkillSeed, right: DemoSkillSeed, sort: BrowseSort) {
+  if (sort === 'newest') {
+    return right.updatedAt - left.updatedAt
+  }
+
+  if (sort === 'trending') {
+    return right.score - left.score
+  }
+
+  return right.downloads - left.downloads
 }
 
 function buildPreviewManagerState(
@@ -4028,6 +4476,170 @@ function formatCatalogRetryDelay(retryAfterMs: number) {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
+}
+
+function validateGatewayDraftInput(draft: Pick<DraftConfig, 'gatewayUrl' | 'gatewayToken'>) {
+  const gatewayUrl = draft.gatewayUrl.trim()
+  if (!gatewayUrl) {
+    return 'Enter your OpenClaw Gateway URL first.'
+  }
+
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(gatewayUrl)
+  } catch {
+    return 'The Gateway URL is not valid. Use a full address like wss://gateway.example.com or ws://192.168.1.20:18789.'
+  }
+
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsedUrl.protocol)) {
+    return 'The Gateway URL must start with http://, https://, ws://, or wss://.'
+  }
+
+  if (draft.gatewayToken.trim() && !['https:', 'wss:'].includes(parsedUrl.protocol)) {
+    return 'Gateway tokens only work with a secure https:// or wss:// address.'
+  }
+
+  return null
+}
+
+function formatGatewayConnectionErrorMessage(
+  detail: string,
+  gatewayUrl: string | undefined,
+  action: GatewayFailureAction,
+) {
+  const normalized = detail.trim().toLowerCase()
+  const target = formatGatewayEndpointLabel(gatewayUrl)
+  const actionPhrase =
+    action === 'link' ? 'link to' : action === 'refresh' ? 'reach' : 'send the quest through'
+
+  if (!normalized) {
+    return `Claw Quest could not ${actionPhrase} ${target}. Check the Gateway URL, token, and that the gateway host is online.`
+  }
+
+  if (normalized.includes('enter a valid gateway url') || normalized.includes('gateway url must')) {
+    return detail.trim()
+  }
+
+  if (
+    includesAny(normalized, [
+      'refresh_token_reused',
+      're-authenticate',
+      're authenticate',
+      'sign in to openai codex again',
+      'needs you to sign in to openai codex again',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but OpenClaw behind that gateway needs a fresh OpenAI Codex sign-in. Re-authenticate on the gateway host, then try again.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'unauthorized',
+      'forbidden',
+      'invalid token',
+      'token required',
+      'bad token',
+      'http 401',
+      'http 403',
+      'status code 401',
+      'status code 403',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but the gateway rejected the token. Recopy the token or leave it blank if this gateway does not require one.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'connection refused',
+      'actively refused',
+      'econnrefused',
+      'closed before connect',
+      'could not reach the saved openclaw gateway',
+      'no running openclaw gateway found',
+    ])
+  ) {
+    return `Nothing answered at ${target}. Make sure the OpenClaw Gateway is running, the port is correct, and this phone can reach that machine on the network.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'timed out',
+      'timeout',
+      'handshake timeout',
+      'gave no sign',
+      'went silent',
+      'stopped waiting',
+    ])
+  ) {
+    return `Claw Quest found ${target}, but the connection timed out. The gateway may be offline, on the wrong port, or blocked by VPN, proxy, or firewall rules.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'no such host',
+      'could not resolve',
+      'name or service not known',
+      'failed to lookup address information',
+      'enotfound',
+      'dns',
+    ])
+  ) {
+    return `This device could not find ${target}. Check the hostname spelling or use the gateway machine's local IP address instead.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'certificate',
+      'tls',
+      'ssl',
+      'self-signed',
+      'unknown ca',
+      'certificate verify failed',
+    ])
+  ) {
+    return `This device could not trust ${target}. Use a valid HTTPS/WSS certificate on the gateway, or test without a token on a trusted local connection.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'failovererror',
+      'gateway unavailable',
+      'errorcode=unavailable',
+      'websocket',
+      'socket',
+      'unavailable',
+    ])
+  ) {
+    return `Claw Quest could talk to ${target}, but the gateway could not open a working OpenClaw session. Check that the gateway itself is healthy and that OpenClaw behind it is actually running.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'could not launch the openclaw command',
+      'the system cannot find the file specified',
+      'os error 2',
+      'command not found',
+    ])
+  ) {
+    return `Claw Quest reached the saved gateway settings, but OpenClaw was not available behind that gateway. Make sure the gateway host can actually launch OpenClaw before retrying.`
+  }
+
+  return `Claw Quest could not ${actionPhrase} ${target}. ${detail.trim()}`
+}
+
+function formatGatewayEndpointLabel(gatewayUrl?: string) {
+  const trimmed = gatewayUrl?.trim()
+  if (!trimmed) {
+    return 'the saved OpenClaw Gateway'
+  }
+
+  try {
+    const parsedUrl = new URL(trimmed)
+    const path = parsedUrl.pathname && parsedUrl.pathname !== '/' ? parsedUrl.pathname : ''
+    return `${parsedUrl.protocol}//${parsedUrl.host}${path}`
+  } catch {
+    return trimmed
+  }
 }
 
 function returnedBubbleForClass(agentClass: AgentClass) {

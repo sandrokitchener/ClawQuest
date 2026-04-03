@@ -539,6 +539,31 @@ textarea {
   min-width: 0;
 }
 
+.pixel-shell-mobile .portrait-card {
+  padding-top: 56px;
+}
+
+.pixel-shell-mobile .merchant-window {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 28px 12px 12px;
+}
+
+.pixel-shell-mobile .merchant-topbar {
+  min-height: auto;
+  padding: 14px 14px 16px;
+}
+
+.pixel-shell-mobile .merchant-scroll {
+  padding-top: 12px;
+}
+
+.pixel-shell-mobile .shopkeeper-float {
+  position: relative;
+  top: auto;
+  left: auto;
+  margin: 0 auto 12px;
+}
+
 .pixel-shell-mobile .portrait-frame,
 .pixel-shell-mobile .paper-doll,
 .pixel-shell-mobile .paper-portrait,
@@ -587,7 +612,7 @@ textarea {
 }
 
 .pixel-shell-mobile .portrait-speech {
-  top: 72px;
+  top: 16px;
 }
 
 .pixel-shell-mobile .quest-bubble {
@@ -601,6 +626,20 @@ textarea {
   bottom: -10px;
   width: 14px;
   height: 14px;
+}
+
+.pixel-shell-mobile .quest-controls {
+  gap: 12px;
+  padding: 14px 16px;
+  border: 3px solid rgba(95, 58, 34, 0.32);
+  box-shadow: inset 0 0 0 2px rgba(255, 246, 223, 0.58);
+  background: #f8f1df;
+}
+
+.pixel-shell-mobile .quest-console {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .pixel-shell-mobile.pixel-shell-docked .inventory-pane {
@@ -1845,6 +1884,11 @@ textarea {
   padding-top: 14px;
   border-top: 3px solid rgba(95, 58, 34, 0.16);
   align-items: stretch;
+}
+
+.quest-controls {
+  display: grid;
+  gap: 10px;
 }
 
 .quest-field {
