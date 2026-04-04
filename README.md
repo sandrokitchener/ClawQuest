@@ -108,6 +108,16 @@ bunx tauri android build --apk --target aarch64 --ci
 
 The generated APK will be placed under the Android Gradle output tree inside `desktop/src-tauri/gen/android/`.
 
+### Android gateway helper skill
+
+If you want the Android app to talk to a desktop OpenClaw gateway, install the host-side helper skill on that desktop OpenClaw machine.
+
+```bash
+openclaw skills install clawquest-android-gateway-admin
+```
+
+That is the planned ClawHub install command for the helper skill once it is published. The helper does not bypass pairing or auth, but it makes gateway-side approval, `operator.write` repairs, and stale device token recovery much easier when you are onboarding a phone.
+
 ## Connection modes
 
 Claw Quest supports three quest transport modes in `Build Settings`.

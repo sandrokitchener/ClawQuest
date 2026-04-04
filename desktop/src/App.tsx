@@ -4,9 +4,11 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Construction,
   FolderOpen,
   Globe,
   HardDrive,
+  HandCoins,
   LoaderCircle,
   MessageCircle,
   RefreshCw,
@@ -120,6 +122,13 @@ type RefreshStateResult = {
   errorMessage: string | null
 }
 type GatewayFailureAction = 'link' | 'refresh' | 'quest'
+type QuestLogEntry = {
+  id: number
+  tone: Tone
+  title: string
+  detail?: string
+  timestamp: number
+}
 
 type DemoSkillSeed = {
   slug: string
@@ -187,6 +196,7 @@ const AGENT_RACE_STORAGE_KEY = 'claw-quest-adventurer-race-v1'
 const QUEST_PROGRESS_STORAGE_KEY = 'claw-quest-adventurer-progress-v1'
 const CONNECTION_SETTINGS_STORAGE_KEY = 'claw-quest-connection-settings-v1'
 const AUDIO_MUTED_STORAGE_KEY = 'claw-quest-audio-muted-v1'
+const QUEST_LOG_VISIBLE_STORAGE_KEY = 'claw-quest-quest-log-visible-v1'
 const DRAG_TRANSFER_KEY = 'application/x-claw-quest-skill'
 const AVATAR_SPEAKING_MS = 2600
 const CATALOG_SEARCH_DEBOUNCE_MS = 420
@@ -761,6 +771,7 @@ export default function App() {
   const [isMobileShell, setIsMobileShell] = useState(() => detectMobileShell())
   const [isDocked, setIsDocked] = useState(() => detectMobileShell())
   const [mobileShopOpen, setMobileShopOpen] = useState(false)
+  const [desktopShopOpen, setDesktopShopOpen] = useState(false)
   const [mobileSetupOpen, setMobileSetupOpen] = useState(() => !hasGatewayWizardConfig(mergeStoredConnectionSettings(EMPTY_DRAFT)))
   const [mobileSetupStep, setMobileSetupStep] = useState(0)
   const [mobileSetupDismissed, setMobileSetupDismissed] = useState(false)
@@ -773,6 +784,8 @@ export default function App() {
   const [questBusy, setQuestBusy] = useState(false)
   const [activeQuestPrompt, setActiveQuestPrompt] = useState('')
   const [questError, setQuestError] = useState('')
+  const [questLogVisible, setQuestLogVisible] = useState(() => readQuestLogVisible())
+  const [questLogEntries, setQuestLogEntries] = useState<QuestLogEntry[]>([])
   const [avatarSpeaking, setAvatarSpeaking] = useState(false)
   const didInitRef = useRef(false)
   const catalogRequestRef = useRef(0)
@@ -788,12 +801,18 @@ export default function App() {
     connectionMode: ConnectionMode
     prompt: string
     busy: boolean
+    gatewayUrl: string
+    mobileShell: boolean
   }>({
     agentClass: 'ranger',
     connectionMode: 'local',
     prompt: '',
     busy: false,
+    gatewayUrl: '',
+    mobileShell: false,
   })
+  const questLogIdRef = useRef(0)
+  const questProgressStagesSeenRef = useRef<Set<string>>(new Set())
   const toolsPaneScrollFrameRef = useRef<number | null>(null)
   const shellViewportRef = useRef<HTMLElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
@@ -802,15 +821,29 @@ export default function App() {
 
   const state = managerState ?? EMPTY_STATE
   const previewOnlyMode = !runtime || isMobileShell
+  const activeConnectionMode = appliedConfig?.connectionMode ?? draftConfig.connectionMode
+  const questPreviewOnlyMode = !runtime || (isMobileShell && activeConnectionMode !== 'remote')
+  const appliedDraft = draftFromConfig(appliedConfig)
+  const mobileGatewaySaved = hasGatewayWizardConfig(appliedDraft)
+  const mobileGatewayReady = mobileGatewaySaved
+  const liveMobileRemoteQuests = runtime && isMobileShell && activeConnectionMode === 'remote'
+  const shopVisible = isMobileShell ? mobileShopOpen : desktopShopOpen
   const featureDemoMode = !runtime && !isMobileShell && isFeatureDemoMode()
   const installedSlugs = new Set(state.installed.map((skill) => skill.slug))
   const readySkills = state.installed.filter((skill) => skill.status === 'ready')
   const riskyCount = readySkills.filter((skill) => isRiskyStatus(skill.security.status)).length
   const derivedAgentClass = classifyAgentLoadout(state.installed)
+  function formatRemoteErrorMessage(
+    detail: string,
+    gatewayUrl: string | undefined,
+    action: GatewayFailureAction,
+  ) {
+    return isMobileShell
+      ? formatAndroidGatewayConnectionErrorMessage(detail, gatewayUrl, action)
+      : formatGatewayConnectionErrorMessage(detail, gatewayUrl, action)
+  }
   const displayedAgentClass = derivedAgentClass
   const displayedAgentRace = agentRace
-  const activeConnectionMode = appliedConfig?.connectionMode ?? draftConfig.connectionMode
-  const mobileGatewayReady = hasGatewayWizardConfig(draftConfig)
   const classTheme = CLASS_THEMES[displayedAgentClass]
   const ClassIcon = classTheme.icon
   const adventurerName = state.agentName?.trim() || 'Adventurer'
@@ -850,15 +883,22 @@ export default function App() {
       return
     }
 
+    if (!shopVisible) {
+      setLoadingCatalog(false)
+      setCatalogIssue('')
+      setCatalogCooldownUntil(null)
+      return
+    }
+
     const timeoutId = window.setTimeout(() => {
       void refreshCatalog(appliedConfig, searchText, sort)
     }, CATALOG_SEARCH_DEBOUNCE_MS)
 
     return () => window.clearTimeout(timeoutId)
-  }, [appliedConfig, booted, searchText, sort])
+  }, [appliedConfig, booted, searchText, shopVisible, sort])
 
   useEffect(() => {
-    if (!booted || catalogCooldownUntil === null) {
+    if (!booted || !shopVisible || catalogCooldownUntil === null) {
       return
     }
 
@@ -875,7 +915,7 @@ export default function App() {
     }, remainingMs)
 
     return () => window.clearTimeout(timeoutId)
-  }, [appliedConfig, booted, catalogCooldownUntil, searchText, sort])
+  }, [appliedConfig, booted, catalogCooldownUntil, searchText, shopVisible, sort])
 
   useEffect(() => {
     writeSlotPreferences(slotPreferences)
@@ -892,6 +932,10 @@ export default function App() {
 
     startBackgroundMusic()
   }, [audioMuted])
+
+  useEffect(() => {
+    writeQuestLogVisible(questLogVisible)
+  }, [questLogVisible])
 
   useEffect(() => {
     questBubbleValueRef.current = questBubble
@@ -937,7 +981,7 @@ export default function App() {
       return
     }
 
-    if (mobileGatewayReady) {
+    if (mobileGatewaySaved) {
       setMobileSetupDismissed(false)
       return
     }
@@ -945,7 +989,7 @@ export default function App() {
     if (!mobileSetupDismissed) {
       setMobileSetupOpen(true)
     }
-  }, [isMobileShell, mobileGatewayReady, mobileSetupDismissed])
+  }, [isMobileShell, mobileGatewaySaved, mobileSetupDismissed])
 
   useEffect(() => {
     questProgressContextRef.current = {
@@ -953,8 +997,18 @@ export default function App() {
       connectionMode: activeConnectionMode,
       prompt: activeQuestPrompt,
       busy: questBusy,
+      gatewayUrl: appliedConfig?.gatewayUrl ?? draftConfig.gatewayUrl,
+      mobileShell: isMobileShell,
     }
-  }, [activeConnectionMode, activeQuestPrompt, displayedAgentClass, questBusy])
+  }, [
+    activeConnectionMode,
+    activeQuestPrompt,
+    appliedConfig?.gatewayUrl,
+    displayedAgentClass,
+    draftConfig.gatewayUrl,
+    isMobileShell,
+    questBusy,
+  ])
 
   useEffect(() => {
     if (!runtime) {
@@ -968,6 +1022,19 @@ export default function App() {
       const context = questProgressContextRef.current
       if (!context.busy) {
         return
+      }
+
+      if (!questProgressStagesSeenRef.current.has(progressEvent.stage)) {
+        const nextLogEntry = formatQuestProgressEventLog(
+          progressEvent,
+          context.connectionMode,
+          context.gatewayUrl,
+          context.mobileShell,
+        )
+        if (nextLogEntry) {
+          questProgressStagesSeenRef.current.add(progressEvent.stage)
+          appendQuestLogEntries([nextLogEntry])
+        }
       }
 
       if (!shouldSurfaceQuestProgressStage(progressEvent.stage)) {
@@ -1005,6 +1072,28 @@ export default function App() {
       unlisten?.()
     }
   }, [runtime])
+
+  function createQuestLogEntry(entry: Omit<QuestLogEntry, 'id' | 'timestamp'>): QuestLogEntry {
+    questLogIdRef.current += 1
+    return {
+      ...entry,
+      id: questLogIdRef.current,
+      timestamp: Date.now(),
+    }
+  }
+
+  function appendQuestLogEntries(entries: Array<Omit<QuestLogEntry, 'id' | 'timestamp'>>) {
+    if (entries.length === 0) {
+      return
+    }
+
+    setQuestLogEntries((current) => [...current, ...entries.map((entry) => createQuestLogEntry(entry))].slice(-12))
+  }
+
+  function resetQuestLog(entries: Array<Omit<QuestLogEntry, 'id' | 'timestamp'>> = []) {
+    questProgressStagesSeenRef.current = new Set()
+    setQuestLogEntries(entries.map((entry) => createQuestLogEntry(entry)))
+  }
 
   useEffect(() => {
     if (questBubbleIntervalRef.current !== null) {
@@ -1291,7 +1380,7 @@ export default function App() {
       const connectionMode = nextConfig?.connectionMode ?? draftConfig.connectionMode
       const errorMessage =
         connectionMode === 'remote'
-          ? formatGatewayConnectionErrorMessage(
+          ? formatRemoteErrorMessage(
               rawMessage,
               nextConfig?.gatewayUrl ?? draftConfig.gatewayUrl,
               'refresh',
@@ -1374,9 +1463,9 @@ export default function App() {
           setCatalogIssue(formatCatalogRateLimitMessage(cooldownMs, trimmedQuery))
           setError((current) => (parseCatalogRateLimit(current) ? '' : current))
         } else {
-          setCatalogIssue('')
+          setCatalogIssue(message)
           setCatalogCooldownUntil(null)
-          setError(message)
+          setError((current) => (parseCatalogRateLimit(current) ? '' : current))
         }
       }
     } finally {
@@ -1480,6 +1569,11 @@ export default function App() {
     setSettingsOpen(false)
   }
 
+  function handleToggleQuestLog() {
+    setQuestLogVisible((current) => !current)
+    setSettingsOpen(false)
+  }
+
   async function handleCenterWindow() {
     setSettingsOpen(false)
 
@@ -1555,7 +1649,7 @@ export default function App() {
       if (!applied) {
         setMobileSetupError(
           errorMessage ??
-            formatGatewayConnectionErrorMessage(
+            formatRemoteErrorMessage(
               'The gateway profile could not be saved yet.',
               nextDraft.gatewayUrl,
               'link',
@@ -1596,15 +1690,27 @@ export default function App() {
   async function handleQuestSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const prompt = questDraft.trim()
+    const gatewayUrl = appliedConfig?.gatewayUrl ?? draftConfig.gatewayUrl
 
     if (!prompt) {
       setQuestError('Enter a quest prompt first.')
       return
     }
 
+    setNotice('')
+    const nextAttemptLog = buildQuestAttemptLogEntries(prompt, activeConnectionMode, gatewayUrl)
+
     if (isMobileShell) {
       const gatewayDraftIssue = validateGatewayDraftInput(draftConfig)
       if (gatewayDraftIssue) {
+        resetQuestLog([
+          ...nextAttemptLog,
+          {
+            tone: 'danger',
+            title: 'Quest blocked before launch',
+            detail: gatewayDraftIssue,
+          },
+        ])
         setQuestError(gatewayDraftIssue)
         setQuestMood('error')
         setQuestBubble('The gate is not ready.')
@@ -1612,6 +1718,7 @@ export default function App() {
       }
     }
 
+    resetQuestLog(nextAttemptLog)
     setQuestBusy(true)
     setActiveQuestPrompt(prompt)
     setQuestError('')
@@ -1622,12 +1729,41 @@ export default function App() {
       connectionMode: activeConnectionMode,
       prompt,
       busy: true,
+      gatewayUrl,
+      mobileShell: isMobileShell,
     }
     setAvatarSpeaking(false)
     playUiSound('questSend')
 
     try {
-      if (previewOnlyMode) {
+      if (questPreviewOnlyMode) {
+        if (runtime && isMobileShell) {
+          const previewOnlyMessage = formatMobileQuestPreviewOnlyMessage(activeConnectionMode, gatewayUrl)
+          appendQuestLogEntries([
+            {
+              tone: 'warning',
+              title: 'Android preview mode is still active',
+              detail: 'This build did not attempt a live OpenClaw request from the phone.',
+            },
+            {
+              tone: 'warning',
+              title: 'Why no connection was tested',
+              detail: formatMobileQuestPreviewReason(activeConnectionMode),
+            },
+          ])
+          setQuestError(previewOnlyMessage)
+          setQuestBubble('This shell still only rehearses the quest.')
+          setQuestMood('error')
+          setActiveQuestPrompt('')
+          questProgressContextRef.current = {
+            ...questProgressContextRef.current,
+            busy: false,
+            prompt: '',
+          }
+          triggerAvatarSpeaking()
+          return
+        }
+
         await new Promise((resolve) => window.setTimeout(resolve, MOBILE_PREVIEW_QUEST_DELAY_MS))
         const nextQuestCount = questsCompleted + 1
         const previousLevel = progress.level
@@ -1654,6 +1790,13 @@ export default function App() {
             ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
             : replyNotice,
         )
+        appendQuestLogEntries([
+          {
+            tone: 'clean',
+            title: 'Preview quest completed',
+            detail: replyNotice,
+          },
+        ])
         return
       }
 
@@ -1680,11 +1823,18 @@ export default function App() {
           ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
           : replyNotice,
       )
+      appendQuestLogEntries([
+        {
+          tone: 'clean',
+          title: 'OpenClaw replied',
+          detail: summarizeQuestTextForLog(replyNotice, 220),
+        },
+      ])
     } catch (caughtError) {
       const rawError = normalizeCommandError(caughtError)
       const nextError =
         activeConnectionMode === 'remote'
-          ? formatGatewayConnectionErrorMessage(
+          ? formatRemoteErrorMessage(
               rawError,
               appliedConfig?.gatewayUrl ?? draftConfig.gatewayUrl,
               'quest',
@@ -1694,6 +1844,14 @@ export default function App() {
       setQuestBubble(formatQuestErrorBubble(nextError, prompt, displayedAgentClass))
       setQuestMood('error')
       setActiveQuestPrompt('')
+      appendQuestLogEntries(
+        buildQuestFailureLogEntries({
+          rawError,
+          displayError: nextError,
+          connectionMode: activeConnectionMode,
+          gatewayUrl,
+        }),
+      )
       questProgressContextRef.current = {
         ...questProgressContextRef.current,
         busy: false,
@@ -2069,7 +2227,7 @@ export default function App() {
         </label>
         <button className="pixel-button pixel-button-primary" disabled={questBusy} type="submit">
           {questBusy ? <LoaderCircle className="spin" size={16} /> : <MessageCircle size={16} />}
-          {questBusy ? 'Sending' : isMobileShell ? 'Preview Quest' : 'Quest'}
+          {questBusy ? 'Sending' : isMobileShell ? (liveMobileRemoteQuests ? 'Quest' : 'Preview Quest') : 'Quest'}
         </button>
       </form>
 
@@ -2079,12 +2237,66 @@ export default function App() {
           <span>{questError}</span>
         </div>
       ) : null}
+
+      {questLogVisible && questLogEntries.length > 0 ? (
+        <div className="quest-log" role="log">
+          <div className="quest-log-head">
+            <span>Quest Log</span>
+            <span className={`mini-chip ${questBusy ? 'mini-chip-warning' : ''}`}>{questBusy ? 'Working' : 'Latest'}</span>
+          </div>
+
+          <div className="quest-log-list">
+            {questLogEntries.map((entry) => (
+              <div className={`quest-log-entry quest-log-entry-${entry.tone}`} key={entry.id}>
+                <span className="quest-log-time">{formatQuestLogTimestamp(entry.timestamp)}</span>
+                <div className="quest-log-copy">
+                  <strong>{entry.title}</strong>
+                  {entry.detail ? <span>{entry.detail}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 
+  const desktopShopLaunchers = !isMobileShell ? (
+    <div className="desktop-shop-launchers">
+      <button
+        aria-controls="desktop-merchant-panel"
+        aria-expanded={desktopShopOpen}
+        className={`pixel-button desktop-shop-launcher desktop-shop-launcher-primary ${desktopShopOpen ? 'desktop-shop-launcher-active' : ''}`}
+        onClick={() => {
+          playUiSound('blip')
+          setDesktopShopOpen((current) => !current)
+        }}
+        type="button"
+      >
+        <HandCoins size={18} />
+        <span className="desktop-shop-launcher-copy">
+          <strong>Equipment Merchant</strong>
+          <span>{desktopShopOpen ? 'Hide the skill shop' : 'Reveal the skill shop'}</span>
+        </span>
+      </button>
+
+      <button
+        className="pixel-button desktop-shop-launcher desktop-shop-launcher-disabled"
+        disabled
+        type="button"
+      >
+        <Construction size={18} />
+        <span className="desktop-shop-launcher-copy">
+          <strong>Potion Shop Coming Soon</strong>
+          <span>Brewing a future prompt shop</span>
+        </span>
+      </button>
+    </div>
+  ) : null
+
   return (
     <main
-      className={`pixel-shell ${isDocked ? 'pixel-shell-docked' : ''} ${toolsOpen ? 'pixel-shell-tools-open' : ''} ${isMobileShell ? 'pixel-shell-mobile' : ''} ${mobileShopOpen ? 'mobile-shop-open' : ''}`}
+      className={`pixel-shell ${isDocked ? 'pixel-shell-docked' : ''} ${toolsOpen ? 'pixel-shell-tools-open' : ''} ${isMobileShell ? 'pixel-shell-mobile' : ''} ${mobileShopOpen ? 'mobile-shop-open' : ''} ${!isMobileShell && desktopShopOpen ? 'desktop-shop-open' : ''} ${!isMobileShell && !desktopShopOpen ? 'desktop-shop-collapsed' : ''}`}
       ref={shellViewportRef}
     >
       <section className={`game-screen ${isDocked ? 'game-screen-docked' : ''}`}>
@@ -2128,6 +2340,9 @@ export default function App() {
                       <span className="settings-menu-title">Settings</span>
                       <button className="pixel-button settings-menu-action" onClick={handleToggleAudioMuted} type="button">
                         {audioMuted ? 'Unmute audio' : 'Mute audio'}
+                      </button>
+                      <button className="pixel-button settings-menu-action" onClick={handleToggleQuestLog} type="button">
+                        {questLogVisible ? 'Hide quest log' : 'Show quest log'}
                       </button>
                       {!isMobileShell ? (
                         <button className="pixel-button settings-menu-action" onClick={() => void handleCenterWindow()} type="button">
@@ -2189,7 +2404,10 @@ export default function App() {
         ) : null}
 
         <div className={`board-grid ${isDocked ? 'board-grid-docked' : ''}`}>
-          <section className={`board-pane inventory-pane ${isMobileShell ? 'inventory-pane-mobile' : ''}`}>
+          <section
+            className={`board-pane inventory-pane ${isMobileShell ? 'inventory-pane-mobile' : ''}`}
+            id="desktop-merchant-panel"
+          >
             {isMobileShell ? <div className="mobile-sheet-handle" /> : null}
             <div className="merchant-window">
               <div
@@ -2367,6 +2585,8 @@ export default function App() {
               </div>
 
               <div className="portrait-details">
+                {desktopShopLaunchers}
+
 	                <div className={`class-card ${classTheme.cardClass}`}>
                   <div className="class-card-topline">
                     <span className="class-card-kicker">Adventurer</span>
@@ -2414,7 +2634,9 @@ export default function App() {
 	                    <div>
 	                      <strong>{mobileGatewayReady ? 'Gateway linked' : 'Gateway setup pending'}</strong>
 	                      <span>
-	                        Browse the guild ledger below. The loadout stays empty until OpenClaw is actually connected.
+	                        {liveMobileRemoteQuests
+	                          ? 'Mobile quests now use the linked gateway. Loadout and shop state are still preview-backed on the phone.'
+	                          : 'Browse the guild ledger below. The loadout stays empty until OpenClaw is actually connected.'}
 	                      </span>
                     </div>
                   </div>
@@ -2813,8 +3035,8 @@ export default function App() {
                 <span className="mobile-setup-kicker">Setup Wizard</span>
                 <h2>Link your online OpenClaw Gateway</h2>
                 <p>
-                  This mobile build starts in the docked layout and treats your Gateway as home base. We’ll save the
-                  connection details now, then you can browse the shop and test the touch UI shell.
+                  This mobile build opens on its own. Add your gateway details here if you want live remote quests,
+                  but the phone only contacts that gateway when you actually send one.
                 </p>
                 <div className="mobile-setup-actions">
                   <button className="pixel-button pixel-button-primary" onClick={() => setMobileSetupStep(1)} type="button">
@@ -2869,8 +3091,13 @@ export default function App() {
                 </label>
 
                 <p className="tool-note">
-                  This APK currently saves the Gateway profile and previews quest interactions while direct remote
-                  dispatch is being wired up.
+                  This APK saves the gateway profile on this phone, including the token, and only contacts that
+                  gateway when you launch a remote quest.
+                </p>
+
+                <p className="tool-note">
+                  Install the Claw Quest Android gateway helper skill on the desktop OpenClaw host you want this phone
+                  to talk to. See the README for the current publish and install path.
                 </p>
 
                 {mobileSetupError ? (
@@ -3454,11 +3681,12 @@ function readStoredConnectionSettings(): Partial<DraftConfig> {
     }
 
     const parsed = JSON.parse(raw) as Partial<DraftConfig>
+    const persistGatewayToken = detectMobileShell()
     return {
       connectionMode:
         parsed.connectionMode === 'remote' || parsed.connectionMode === 'docker' ? parsed.connectionMode : 'local',
       gatewayUrl: typeof parsed.gatewayUrl === 'string' ? parsed.gatewayUrl : '',
-      gatewayToken: '',
+      gatewayToken: persistGatewayToken && typeof parsed.gatewayToken === 'string' ? parsed.gatewayToken : '',
       dockerContainer: typeof parsed.dockerContainer === 'string' ? parsed.dockerContainer : '',
       dockerCommand: typeof parsed.dockerCommand === 'string' && parsed.dockerCommand.trim() ? parsed.dockerCommand : 'openclaw',
       dockerWorkdir: typeof parsed.dockerWorkdir === 'string' ? parsed.dockerWorkdir : '',
@@ -3469,11 +3697,13 @@ function readStoredConnectionSettings(): Partial<DraftConfig> {
 }
 
 function writeStoredConnectionSettings(draft: DraftConfig) {
+  const persistGatewayToken = detectMobileShell()
   window.localStorage.setItem(
     CONNECTION_SETTINGS_STORAGE_KEY,
     JSON.stringify({
       connectionMode: draft.connectionMode,
       gatewayUrl: draft.gatewayUrl,
+      gatewayToken: persistGatewayToken ? draft.gatewayToken : '',
       dockerContainer: draft.dockerContainer,
       dockerCommand: draft.dockerCommand,
       dockerWorkdir: draft.dockerWorkdir,
@@ -4023,6 +4253,26 @@ function writeAudioMuted(muted: boolean) {
   }
 }
 
+function readQuestLogVisible() {
+  try {
+    return window.localStorage.getItem(QUEST_LOG_VISIBLE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeQuestLogVisible(visible: boolean) {
+  try {
+    if (visible) {
+      window.localStorage.setItem(QUEST_LOG_VISIBLE_STORAGE_KEY, '1')
+    } else {
+      window.localStorage.removeItem(QUEST_LOG_VISIBLE_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore storage write issues in restricted environments.
+  }
+}
+
 function readQuestProgress() {
   try {
     const raw = window.localStorage.getItem(QUEST_PROGRESS_STORAGE_KEY)
@@ -4197,6 +4447,123 @@ function formatQuestProgressEventBubble(
   }
 }
 
+function formatQuestProgressEventLog(
+  progressEvent: QuestProgressEvent,
+  connectionMode: ConnectionMode,
+  gatewayUrl: string,
+  mobileShell: boolean,
+): Omit<QuestLogEntry, 'id' | 'timestamp'> | null {
+  switch (progressEvent.stage) {
+    case 'remote-config':
+      return {
+        tone: 'neutral',
+        title: 'Prepared the remote gateway profile',
+        detail: `Using ${formatGatewayEndpointLabel(gatewayUrl)} for this quest.`,
+      }
+    case 'gateway-direct':
+      return {
+        tone: 'neutral',
+        title: 'Sending the quest to the gateway',
+        detail: mobileShell
+          ? `The phone is calling ${formatGatewayEndpointLabel(gatewayUrl)} directly through the Tauri backend.`
+          : `Claw Quest is sending the quest directly through ${formatGatewayEndpointLabel(gatewayUrl)}.`
+      }
+    case 'runner-cached':
+      return {
+        tone: 'neutral',
+        title: 'Using the cached OpenClaw runner',
+        detail: mobileShell
+          ? 'Claw Quest is checking for a device-local runner before any gateway handoff.'
+          : 'Claw Quest reused the last known working OpenClaw runner.',
+      }
+    case 'runner-discovery':
+      return {
+        tone: 'neutral',
+        title: 'Looking for an OpenClaw runner',
+        detail:
+          connectionMode === 'remote'
+            ? 'Remote mode still starts by locating a local OpenClaw runner.'
+            : 'Searching the current machine for a usable OpenClaw command.',
+      }
+    case 'runner-direct':
+      return {
+        tone: 'neutral',
+        title: 'Launching OpenClaw',
+        detail:
+          connectionMode === 'remote'
+            ? 'Starting the local runner with the saved gateway profile.'
+            : connectionMode === 'docker'
+              ? 'Starting the Docker-backed OpenClaw runner.'
+              : 'Starting the local OpenClaw runner directly.',
+      }
+    case 'gateway-fallback':
+      return {
+        tone: 'warning',
+        title: 'Primary runner path failed',
+        detail: 'Claw Quest is checking whether a gateway-backed fallback route can recover the quest.',
+      }
+    case 'gateway-health':
+      return {
+        tone: 'warning',
+        title: 'Checking gateway health',
+        detail:
+          connectionMode === 'docker'
+            ? 'Testing whether the Docker OpenClaw Gateway is actually up.'
+            : `Testing whether ${formatGatewayEndpointLabel(gatewayUrl)} answers health checks.`,
+      }
+    case 'runner-fallback':
+      return {
+        tone: 'warning',
+        title: 'Retrying through a fallback runner',
+        detail: 'A different runner path looked viable, so Claw Quest is trying once more.',
+      }
+    case 'docker-direct':
+      return {
+        tone: 'neutral',
+        title: 'Trying Docker transport',
+        detail: 'Claw Quest is sending the quest through the configured Docker container.',
+      }
+    case 'docker-health':
+      return {
+        tone: 'warning',
+        title: 'Checking Docker gateway health',
+        detail: 'The first Docker attempt failed, so Claw Quest is probing the container gateway.',
+      }
+    case 'docker-retry':
+      return {
+        tone: 'warning',
+        title: 'Retrying inside Docker',
+        detail: 'The container answered health checks, so Claw Quest is attempting the quest again.',
+      }
+    case 'agent-working':
+      return {
+        tone: 'neutral',
+        title: 'OpenClaw accepted the quest',
+        detail: 'The agent process is running and Claw Quest is waiting for output.',
+      }
+    case 'agent-delayed':
+      return {
+        tone: 'warning',
+        title: 'Still waiting for first output',
+        detail: 'OpenClaw is running, but nothing readable has come back yet.',
+      }
+    case 'agent-long-wait':
+      return {
+        tone: 'warning',
+        title: 'The quest is taking longer than usual',
+        detail: 'Claw Quest is still connected and waiting for the agent to finish.',
+      }
+    case 'agent-output':
+      return {
+        tone: 'clean',
+        title: 'OpenClaw started returning output',
+        detail: 'The connection is alive and the agent has begun streaming a response.',
+      }
+    default:
+      return null
+  }
+}
+
 function shouldSurfaceQuestProgressStage(stage: QuestProgressEvent['stage']) {
   switch (stage) {
     case 'gateway-fallback':
@@ -4264,6 +4631,119 @@ function formatQuestErrorBubble(error: string, prompt: string, agentClass: Agent
     case 'rogue':
       return 'Bah. The job turned crooked.'
   }
+}
+
+function buildQuestAttemptLogEntries(
+  prompt: string,
+  connectionMode: ConnectionMode,
+  gatewayUrl: string,
+): Array<Omit<QuestLogEntry, 'id' | 'timestamp'>> {
+  const entries: Array<Omit<QuestLogEntry, 'id' | 'timestamp'>> = [
+    {
+      tone: 'neutral',
+      title: 'Quest queued',
+      detail: summarizeQuestTextForLog(prompt, 120),
+    },
+    {
+      tone: 'neutral',
+      title: `Transport: ${formatConnectionModeLabel(connectionMode)}`,
+      detail:
+        connectionMode === 'remote'
+          ? `Target: ${formatGatewayEndpointLabel(gatewayUrl)}`
+          : connectionMode === 'docker'
+            ? 'Routing the quest through the configured Docker container.'
+            : 'Routing the quest through the local OpenClaw runner.',
+    },
+  ]
+
+  return entries
+}
+
+function buildQuestFailureLogEntries({
+  rawError,
+  displayError,
+  connectionMode,
+  gatewayUrl,
+}: {
+  rawError: string
+  displayError: string
+  connectionMode: ConnectionMode
+  gatewayUrl: string
+}): Array<Omit<QuestLogEntry, 'id' | 'timestamp'>> {
+  const entries: Array<Omit<QuestLogEntry, 'id' | 'timestamp'>> = [
+    {
+      tone: 'danger',
+      title: 'Quest failed',
+      detail:
+        connectionMode === 'remote'
+          ? `${displayError} Target: ${formatGatewayEndpointLabel(gatewayUrl)}`
+          : displayError,
+    },
+  ]
+
+  const normalizedRawError = rawError.trim()
+  const normalizedDisplayError = displayError.trim()
+  if (normalizedRawError && normalizedRawError !== normalizedDisplayError) {
+    entries.push({
+      tone: 'warning',
+      title: 'Raw OpenClaw detail',
+      detail: summarizeQuestTextForLog(normalizedRawError, 280),
+    })
+  }
+
+  return entries
+}
+
+function formatMobileQuestPreviewOnlyMessage(connectionMode: ConnectionMode, gatewayUrl: string) {
+  if (connectionMode === 'remote') {
+    return `Android still uses preview-only quest dispatch in this build. No live request was sent to ${formatGatewayEndpointLabel(gatewayUrl)}.`
+  }
+
+  if (connectionMode === 'docker') {
+    return 'Android still uses preview-only quest dispatch in this build. No live Docker request was sent from the phone.'
+  }
+
+  return 'Android still uses preview-only quest dispatch in this build. No live OpenClaw request was sent from the phone.'
+}
+
+function formatMobileQuestPreviewReason(connectionMode: ConnectionMode) {
+  if (connectionMode === 'remote') {
+    return 'Remote mode in this shell still depends on a device-local OpenClaw CLI runner, and the Android build does not bundle that runner yet.'
+  }
+
+  if (connectionMode === 'docker') {
+    return 'Docker quest transport is not wired up from the Android shell yet, so this mode still rehearses the quest only.'
+  }
+
+  return 'The Android shell does not bundle a local OpenClaw CLI runner yet, so local mode still rehearses the quest only.'
+}
+
+function formatConnectionModeLabel(connectionMode: ConnectionMode) {
+  switch (connectionMode) {
+    case 'remote':
+      return 'Remote Gateway'
+    case 'docker':
+      return 'Docker'
+    default:
+      return 'Local OpenClaw'
+  }
+}
+
+function summarizeQuestTextForLog(text: string, maxLength: number) {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (collapsed.length <= maxLength) {
+    return collapsed
+  }
+
+  return `${collapsed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`
+}
+
+function formatQuestLogTimestamp(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 }
 
 function classifyQuestTheme(source: string) {
@@ -4502,6 +4982,61 @@ function validateGatewayDraftInput(draft: Pick<DraftConfig, 'gatewayUrl' | 'gate
   return null
 }
 
+function formatAndroidGatewayConnectionErrorMessage(
+  detail: string,
+  gatewayUrl: string | undefined,
+  action: GatewayFailureAction,
+) {
+  const normalized = detail.trim().toLowerCase()
+  const target = formatGatewayEndpointLabel(gatewayUrl)
+
+  if (
+    includesAny(normalized, [
+      'openclaw http agent unable to connect',
+      'http agent unable to connect',
+      'unable to connect to the openclaw http agent',
+      'unable to connect to openclaw',
+      'agent unable to connect',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but that gateway could not connect to OpenClaw on the gateway machine. Check the gateway host first: OpenClaw may not be running there, may need a fresh sign-in, or the gateway may be pointed at the wrong local agent address or port.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'pairing approval',
+      'pairing required',
+      'needs pairing approval',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but this phone still needs pairing approval on the gateway host before it can send quests.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'device identity',
+      'device signature',
+      'device-auth handshake',
+      'device auth',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but the gateway rejected this phone during device authentication. If the gateway recently restarted or rotated auth settings, try again or re-pair this device from the gateway host.`
+  }
+
+  if (
+    includesAny(normalized, [
+      'handshake timeout',
+      'closed before connect',
+      'connect challenge timeout',
+      'connect challenge missing nonce',
+    ])
+  ) {
+    return `Claw Quest reached ${target}, but the gateway websocket handshake never finished. That usually means the gateway closed the connection before this phone completed connect, often because it was restarting, the tunnel/proxy interrupted the websocket, or device auth was rejected early.`
+  }
+
+  return formatGatewayConnectionErrorMessage(detail, gatewayUrl, action)
+}
+
 function formatGatewayConnectionErrorMessage(
   detail: string,
   gatewayUrl: string | undefined,
@@ -4514,6 +5049,15 @@ function formatGatewayConnectionErrorMessage(
 
   if (!normalized) {
     return `Claw Quest could not ${actionPhrase} ${target}. Check the Gateway URL, token, and that the gateway host is online.`
+  }
+
+  if (
+    normalized.includes('chatcompletions.enabled') ||
+    normalized.includes('http agent endpoint') ||
+    normalized.includes('bearer token') ||
+    normalized.includes('returned http ')
+  ) {
+    return detail.trim()
   }
 
   if (normalized.includes('enter a valid gateway url') || normalized.includes('gateway url must')) {

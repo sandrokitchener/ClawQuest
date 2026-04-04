@@ -116,6 +116,7 @@ export type QuestOutcome = {
 
 export type QuestProgressStage =
   | 'remote-config'
+  | 'gateway-direct'
   | 'runner-cached'
   | 'runner-discovery'
   | 'runner-direct'
@@ -246,6 +247,8 @@ export async function setDesktopWindowDocked(docked: boolean) {
   const height = docked ? DOCKED_WINDOW_HEIGHT : FULL_WINDOW_HEIGHT
   const targetSize = new LogicalSize(width, height)
 
+  await appWindow.setDecorations(docked)
+  await appWindow.setResizable(docked)
   await appWindow.setSizeConstraints({
     minWidth: 780,
     minHeight: 680,

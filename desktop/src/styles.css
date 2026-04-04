@@ -498,8 +498,11 @@ textarea {
   gap: 14px;
 }
 
-.pixel-shell-docked .inventory-pane,
 .pixel-shell-docked .tool-pane {
+  display: none;
+}
+
+.pixel-shell-docked:not(.pixel-shell-mobile):not(.desktop-shop-open) .inventory-pane {
   display: none;
 }
 
@@ -682,6 +685,20 @@ textarea {
 .pixel-shell-docked .portrait-details {
   gap: 12px;
   padding: 14px 16px;
+}
+
+.pixel-shell-docked.desktop-shop-open:not(.pixel-shell-mobile) .inventory-pane {
+  position: fixed;
+  top: 196px;
+  right: 22px;
+  left: auto;
+  bottom: auto;
+  display: grid;
+  width: min(430px, calc(100vw - 44px));
+  height: min(74vh, 840px);
+  max-height: calc(100vh - 220px);
+  z-index: 26;
+  overflow: visible;
 }
 
 .pixel-shell-docked {
@@ -897,6 +914,19 @@ textarea {
 
 .tool-pane-grid > .tool-block:nth-child(3) {
   grid-column: 1 / span 2;
+}
+
+.desktop-shop-collapsed:not(.pixel-shell-mobile):not(.pixel-shell-docked) .board-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.desktop-shop-collapsed:not(.pixel-shell-mobile):not(.pixel-shell-docked) .inventory-pane {
+  display: none;
+}
+
+.desktop-shop-collapsed:not(.pixel-shell-mobile):not(.pixel-shell-docked) .center-pane,
+.desktop-shop-collapsed:not(.pixel-shell-mobile):not(.pixel-shell-docked) .tool-pane {
+  grid-column: 1;
 }
 
 .loadout-window {
@@ -1209,6 +1239,68 @@ textarea {
 .pixel-button-primary {
   background: var(--blue);
   color: #fff7e6;
+}
+
+.desktop-shop-launchers {
+  display: grid;
+  gap: 10px;
+}
+
+.desktop-shop-launcher {
+  justify-content: flex-start;
+  min-height: 68px;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.desktop-shop-launcher svg {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+}
+
+.desktop-shop-launcher-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.desktop-shop-launcher-copy strong {
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+}
+
+.desktop-shop-launcher-copy span {
+  color: rgba(75, 57, 44, 0.78);
+  font-family: var(--font-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.desktop-shop-launcher-primary {
+  background: linear-gradient(180deg, #89a4d9 0%, #6f8cbf 100%);
+  color: #fff7e6;
+}
+
+.desktop-shop-launcher-primary .desktop-shop-launcher-copy span {
+  color: rgba(255, 247, 230, 0.84);
+}
+
+.desktop-shop-launcher-active {
+  transform: translate(-1px, -1px);
+}
+
+.desktop-shop-launcher-disabled {
+  background: linear-gradient(180deg, #d7d2c8 0%, #c7bfb2 100%);
+  color: #6f6658;
+}
+
+.desktop-shop-launcher-disabled:disabled {
+  opacity: 1;
+}
+
+.desktop-shop-launcher-disabled .desktop-shop-launcher-copy span {
+  color: rgba(90, 82, 72, 0.78);
 }
 
 .catalog-grid,
@@ -1937,6 +2029,84 @@ textarea {
   color: #5f2f26;
   font-size: 0.88rem;
   line-height: 1.35;
+}
+
+.quest-log {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 3px solid rgba(95, 58, 34, 0.2);
+  background: rgba(249, 242, 225, 0.94);
+  box-shadow: inset 0 0 0 2px rgba(255, 248, 232, 0.62);
+}
+
+.quest-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-display);
+  font-size: 0.74rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.quest-log-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.quest-log-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 10px;
+  border: 2px solid rgba(95, 58, 34, 0.16);
+  background: rgba(255, 250, 238, 0.88);
+}
+
+.quest-log-entry-clean {
+  background: rgba(232, 245, 229, 0.92);
+}
+
+.quest-log-entry-warning {
+  background: rgba(244, 228, 187, 0.92);
+}
+
+.quest-log-entry-danger {
+  background: rgba(232, 205, 194, 0.94);
+}
+
+.quest-log-time {
+  align-self: start;
+  color: #8e735d;
+  font-family: var(--font-display);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.quest-log-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.quest-log-copy strong {
+  font-size: 0.82rem;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.quest-log-copy span {
+  color: #684f3c;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .mobile-prototype-note {

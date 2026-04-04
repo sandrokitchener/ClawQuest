@@ -2,6 +2,7 @@ use std::{
   collections::{BTreeMap, BTreeSet},
   env,
   ffi::OsStr,
+  future::Future,
   fs,
   io::{Read, Write},
   path::{Path, PathBuf},
@@ -9,15 +10,23 @@ use std::{
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use data_encoding::BASE64URL_NOPAD;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
+use ring::{
+  digest,
+  rand::SystemRandom,
+  signature::{Ed25519KeyPair, KeyPair},
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::{
   io::{AsyncBufReadExt, BufReader},
   process::Command,
   sync::mpsc,
   time::{timeout, Instant},
 };
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use zip::ZipArchive;
 
 const DEFAULT_REGISTRY: &str = "https://clawhub.ai";
@@ -33,8 +42,37 @@ const AGENT_DELAY_NOTICE_SECS: u64 = 20;
 const AGENT_LONG_WAIT_NOTICE_SECS: u64 = 60;
 const AGENT_SILENCE_TIMEOUT_SECS: u64 = 300;
 const AGENT_MAX_RUNTIME_SECS: u64 = 900;
+const GATEWAY_HTTP_TIMEOUT_SECS: u64 = AGENT_MAX_RUNTIME_SECS + 30;
 const QUEST_PROGRESS_EVENT: &str = "clawquest://quest-progress";
+const MOBILE_GATEWAY_CLIENT_ID: &str = "gateway-client";
+const MOBILE_GATEWAY_CLIENT_DISPLAY_NAME: &str = "Claw Quest Android";
+const MOBILE_GATEWAY_CLIENT_MODE: &str = "backend";
+const MOBILE_GATEWAY_PLATFORM: &str = "android";
+const MOBILE_GATEWAY_USER_AGENT: &str = concat!("claw-quest/", env!("CARGO_PKG_VERSION"));
+const MOBILE_GATEWAY_OPERATOR_SCOPES: &[&str] = &["operator.read", "operator.write"];
+const MOBILE_GATEWAY_SESSION_USER: &str = "claw-quest-mobile";
+// "main" is the gateway's canonical default chat session alias.
+const MOBILE_GATEWAY_SESSION_KEY: &str = "main";
 static RUNNER_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+
+type GatewayWsStream = tokio_tungstenite::WebSocketStream<
+  tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedGatewayDeviceIdentity {
+  version: u8,
+  device_id: String,
+  pkcs8: String,
+  created_at_ms: u128,
+}
+
+struct GatewayDeviceIdentity {
+  device_id: String,
+  public_key: String,
+  key_pair: Ed25519KeyPair,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,6 +199,21 @@ pub struct InstallOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct QuestOutcome {
   pub reply: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayChatCompletionsResponse {
+  choices: Vec<GatewayChatCompletionChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayChatCompletionChoice {
+  message: Option<GatewayChatCompletionMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayChatCompletionMessage {
+  content: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -820,10 +873,21 @@ pub async fn send_openclaw_prompt(
     return Err("Enter a quest prompt first.".to_string());
   }
 
-  let progress = QuestProgressReporter::new(window);
+  let progress = QuestProgressReporter::new(window.clone());
 
   match resolved.connection_mode.as_str() {
-    "remote" => send_prompt_via_remote_gateway(&progress, &resolved, trimmed_prompt).await,
+    "remote" => {
+      if should_use_direct_remote_gateway_transport() {
+        let app_data_dir = window
+          .app_handle()
+          .path()
+          .app_data_dir()
+          .map_err(|error| error.to_string())?;
+        send_prompt_via_remote_gateway_direct(&progress, &resolved, trimmed_prompt, &app_data_dir).await
+      } else {
+        send_prompt_via_remote_gateway(&progress, &resolved, trimmed_prompt).await
+      }
+    }
     "docker" => send_prompt_via_docker(&progress, &resolved, trimmed_prompt).await,
     _ => send_prompt_via_local_runner(&progress, &resolved, trimmed_prompt, &[]).await,
   }
@@ -909,6 +973,216 @@ async fn send_prompt_via_remote_gateway(
   let outcome = send_prompt_via_local_runner(progress, resolved, prompt, &env).await;
   let _ = temp_config_path.persist_runtime_updates();
   outcome
+}
+
+async fn send_prompt_via_remote_gateway_direct(
+  progress: &QuestProgressReporter,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  app_data_dir: &Path,
+) -> Result<QuestOutcome, String> {
+  let gateway_url = resolved
+    .gateway_url
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| "Enter a Gateway URL first.".to_string())?;
+
+  let parsed = reqwest::Url::parse(gateway_url)
+    .map_err(|_| "The Gateway URL is not valid. Use a full address like wss://gateway.example.com or ws://192.168.1.20:18789.".to_string())?;
+
+  match parsed.scheme() {
+    "ws" | "wss" => send_prompt_via_remote_gateway_websocket(progress, resolved, prompt, app_data_dir).await,
+    "http" | "https" => send_prompt_via_remote_gateway_http(progress, resolved, prompt).await,
+    _ => Err("The Gateway URL must start with http://, https://, ws://, or wss://.".to_string()),
+  }
+}
+
+async fn send_prompt_via_remote_gateway_websocket(
+  progress: &QuestProgressReporter,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  app_data_dir: &Path,
+) -> Result<QuestOutcome, String> {
+  progress.emit("remote-config");
+  progress.emit("gateway-direct");
+
+  let gateway_url = remote_gateway_websocket_url(resolved)?;
+  let has_shared_token = resolved
+    .gateway_token
+    .as_ref()
+    .map(|value| !value.trim().is_empty())
+    .unwrap_or(false);
+
+  if has_shared_token {
+    match send_prompt_via_remote_gateway_websocket_attempt(progress, resolved, prompt, &gateway_url, None).await {
+      Ok(outcome) => return Ok(outcome),
+      Err(shared_token_error) => {
+        if !is_gateway_ws_missing_operator_scope_error(&shared_token_error) {
+          return Err(shared_token_error);
+        }
+
+        let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
+        match send_prompt_via_remote_gateway_websocket_attempt(
+          progress,
+          resolved,
+          prompt,
+          &gateway_url,
+          Some(&device_identity),
+        )
+        .await
+        {
+          Ok(outcome) => return Ok(outcome),
+          Err(device_error) => {
+            if is_gateway_ws_pairing_required_error(&device_error) {
+              return Err(format!(
+                "The OpenClaw Gateway accepted direct websocket token auth at {}, but it would not grant `chat.send` without device-backed operator access. Claw Quest then retried with this phone's signed device identity, and the gateway asked for pairing approval.\n\nApprove this Android device on the gateway host, then try again.\n\nDirect auth result: {}\nDevice-auth result: {}",
+                gateway_url,
+                shared_token_error,
+                device_error
+              ));
+            }
+
+            return Err(device_error);
+          }
+        }
+      }
+    }
+  }
+
+  let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
+  send_prompt_via_remote_gateway_websocket_attempt(
+    progress,
+    resolved,
+    prompt,
+    &gateway_url,
+    Some(&device_identity),
+  )
+  .await
+}
+
+async fn send_prompt_via_remote_gateway_websocket_attempt(
+  progress: &QuestProgressReporter,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  gateway_url: &reqwest::Url,
+  device_identity: Option<&GatewayDeviceIdentity>,
+) -> Result<QuestOutcome, String> {
+  let gateway_url_string = gateway_url.to_string();
+  let (mut socket, _) = await_gateway_future(progress, async {
+    connect_async(gateway_url_string)
+      .await
+      .map_err(|error| error.to_string())
+  })
+  .await?;
+
+  let nonce = await_gateway_websocket_connect_challenge(progress, &mut socket).await?;
+  let connect_request_id = next_gateway_request_id("connect");
+  let connect_params = build_gateway_connect_params(resolved, &nonce, device_identity);
+  send_gateway_ws_request(
+    progress,
+    &mut socket,
+    &connect_request_id,
+    "connect",
+    connect_params,
+  )
+  .await?;
+
+  let connect_response = await_gateway_ws_response(progress, &mut socket, &connect_request_id).await?;
+  if !connect_response.ok {
+    return Err(format_gateway_ws_request_failure("connect", gateway_url, &connect_response));
+  }
+
+  progress.emit("agent-working");
+  let run_id = next_gateway_request_id("run");
+  let chat_send_request_id = next_gateway_request_id("chat-send");
+  let chat_send_params = serde_json::json!({
+    "sessionKey": MOBILE_GATEWAY_SESSION_KEY,
+    "message": prompt,
+    "idempotencyKey": run_id,
+    "timeoutMs": AGENT_MAX_RUNTIME_SECS * 1000,
+  });
+  send_gateway_ws_request(
+    progress,
+    &mut socket,
+    &chat_send_request_id,
+    "chat.send",
+    chat_send_params,
+  )
+  .await?;
+
+  let chat_send_response = await_gateway_ws_response(progress, &mut socket, &chat_send_request_id).await?;
+  if !chat_send_response.ok {
+    return Err(format_gateway_ws_request_failure(
+      "chat.send",
+      gateway_url,
+      &chat_send_response,
+    ));
+  }
+
+  let expected_run_id = chat_send_response
+    .payload
+    .as_ref()
+    .and_then(|payload| payload.get("runId"))
+    .and_then(|value| value.as_str())
+    .filter(|value| !value.trim().is_empty())
+    .unwrap_or(run_id.as_str())
+    .to_string();
+  let reply = await_gateway_ws_chat_reply(progress, &mut socket, &expected_run_id).await?;
+  progress.emit("agent-output");
+  Ok(QuestOutcome { reply })
+}
+
+async fn send_prompt_via_remote_gateway_http(
+  progress: &QuestProgressReporter,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+) -> Result<QuestOutcome, String> {
+  progress.emit("remote-config");
+  progress.emit("gateway-direct");
+
+  let endpoint = remote_gateway_chat_completions_url(resolved)?;
+  let client = build_gateway_prompt_client()?;
+  let mut request = client.post(endpoint.clone()).json(&serde_json::json!({
+    "model": "openclaw/default",
+    "messages": [
+      {
+        "role": "user",
+        "content": prompt,
+      }
+    ],
+    "stream": false,
+    "user": MOBILE_GATEWAY_SESSION_USER,
+  }));
+
+  if let Some(token) = resolved
+    .gateway_token
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+  {
+    request = request.bearer_auth(token);
+  }
+
+  progress.emit("agent-working");
+  let response = await_gateway_future(progress, async {
+    request.send().await.map_err(|error| error.to_string())
+  })
+  .await?;
+
+  let status = response.status();
+  let body = await_gateway_future(progress, async {
+    response.text().await.map_err(|error| error.to_string())
+  })
+  .await?;
+
+  if !status.is_success() {
+    return Err(format_gateway_http_failure(status, &body, &endpoint));
+  }
+
+  let reply = extract_gateway_chat_completion_reply(&body)?;
+  progress.emit("agent-output");
+  Ok(QuestOutcome { reply })
 }
 
 async fn send_prompt_via_docker(
@@ -3332,6 +3606,677 @@ fn build_client() -> Result<Client, String> {
     .user_agent("claw-pg")
     .build()
     .map_err(|error| error.to_string())
+}
+
+fn build_gateway_prompt_client() -> Result<Client, String> {
+  Client::builder()
+    .timeout(Duration::from_secs(GATEWAY_HTTP_TIMEOUT_SECS))
+    .user_agent("claw-quest-mobile")
+    .build()
+    .map_err(|error| error.to_string())
+}
+
+fn should_use_direct_remote_gateway_transport() -> bool {
+  cfg!(any(target_os = "android", target_os = "ios"))
+}
+
+fn remote_gateway_websocket_url(resolved: &ResolvedManagerConfig) -> Result<reqwest::Url, String> {
+  let raw_gateway_url = resolved
+    .gateway_url
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| "Enter a Gateway URL first.".to_string())?;
+
+  let url = reqwest::Url::parse(raw_gateway_url)
+    .map_err(|_| "The Gateway URL is not valid. Use a full address like wss://gateway.example.com or ws://192.168.1.20:18789.".to_string())?;
+
+  match url.scheme() {
+    "ws" | "wss" => Ok(url),
+    "http" | "https" => Err(
+      "This mobile gateway URL is using HTTP, but the native Gateway protocol expects ws:// or wss://. Use the Gateway WebSocket URL, or explicitly enable the HTTP compatibility endpoint if you want to use http:// or https:// instead."
+        .to_string(),
+    ),
+    _ => Err("The Gateway URL must start with http://, https://, ws://, or wss://.".to_string()),
+  }
+}
+
+fn remote_gateway_chat_completions_url(resolved: &ResolvedManagerConfig) -> Result<reqwest::Url, String> {
+  let raw_gateway_url = resolved
+    .gateway_url
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| "Enter a Gateway URL first.".to_string())?;
+
+  let mut url = reqwest::Url::parse(raw_gateway_url)
+    .map_err(|_| "The Gateway URL is not valid. Use a full address like wss://gateway.example.com or ws://192.168.1.20:18789.".to_string())?;
+
+  let http_scheme = match url.scheme() {
+    "ws" => "http",
+    "wss" => "https",
+    "http" => "http",
+    "https" => "https",
+    _ => {
+      return Err("The Gateway URL must start with http://, https://, ws://, or wss://.".to_string());
+    }
+  };
+  url
+    .set_scheme(http_scheme)
+    .map_err(|_| "The Gateway URL must start with http://, https://, ws://, or wss://.".to_string())?;
+
+  let path = url.path().trim_end_matches('/');
+  let next_path = if path.is_empty() || path == "/" {
+    "/v1/chat/completions".to_string()
+  } else {
+    format!("{path}/v1/chat/completions")
+  };
+  url.set_path(&next_path);
+  url.set_query(None);
+  url.set_fragment(None);
+  Ok(url)
+}
+
+#[derive(Debug)]
+struct GatewayWsResponse {
+  ok: bool,
+  payload: Option<serde_json::Value>,
+  error_message: Option<String>,
+  error_details: Option<serde_json::Value>,
+}
+
+async fn await_gateway_websocket_connect_challenge(
+  progress: &QuestProgressReporter,
+  socket: &mut GatewayWsStream,
+) -> Result<String, String> {
+  loop {
+    let frame = await_gateway_ws_json_frame(progress, socket).await?;
+    if !matches!(
+      frame.get("type").and_then(|value| value.as_str()),
+      Some("event") | Some("evt")
+    ) {
+      continue;
+    }
+
+    if frame.get("event").and_then(|value| value.as_str()) != Some("connect.challenge") {
+      continue;
+    }
+
+    let nonce = frame
+      .get("payload")
+      .and_then(|payload| payload.get("nonce"))
+      .and_then(|value| value.as_str())
+      .map(|value| value.trim().to_string())
+      .filter(|value| !value.is_empty())
+      .ok_or_else(|| "The OpenClaw Gateway sent an invalid connect challenge.".to_string())?;
+    return Ok(nonce);
+  }
+}
+
+fn build_gateway_connect_params(
+  resolved: &ResolvedManagerConfig,
+  nonce: &str,
+  device_identity: Option<&GatewayDeviceIdentity>,
+) -> serde_json::Value {
+  let mut params = serde_json::json!({
+    "minProtocol": 3,
+    "maxProtocol": 3,
+    "client": {
+      "id": MOBILE_GATEWAY_CLIENT_ID,
+      "displayName": MOBILE_GATEWAY_CLIENT_DISPLAY_NAME,
+      "version": env!("CARGO_PKG_VERSION"),
+      "platform": MOBILE_GATEWAY_PLATFORM,
+      "mode": MOBILE_GATEWAY_CLIENT_MODE,
+    },
+    "caps": [],
+    "commands": [],
+    "permissions": {},
+    "role": "operator",
+    "scopes": MOBILE_GATEWAY_OPERATOR_SCOPES,
+    "locale": "en-US",
+    "userAgent": MOBILE_GATEWAY_USER_AGENT,
+  });
+
+  if let Some(device_identity) = device_identity {
+    let signed_at_ms = SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map(|value| value.as_millis())
+      .unwrap_or(0);
+    let signature_payload = build_gateway_device_auth_payload_v3(
+      &device_identity.device_id,
+      MOBILE_GATEWAY_CLIENT_ID,
+      MOBILE_GATEWAY_CLIENT_MODE,
+      "operator",
+      MOBILE_GATEWAY_OPERATOR_SCOPES,
+      signed_at_ms,
+      resolved.gateway_token.as_deref(),
+      nonce,
+      MOBILE_GATEWAY_PLATFORM,
+      "",
+    );
+    let signature = BASE64URL_NOPAD.encode(
+      device_identity
+        .key_pair
+        .sign(signature_payload.as_bytes())
+        .as_ref(),
+    );
+    params["device"] = serde_json::json!({
+      "id": device_identity.device_id,
+      "publicKey": device_identity.public_key,
+      "signature": signature,
+      "signedAt": signed_at_ms,
+      "nonce": nonce,
+    });
+  }
+
+  if let Some(token) = resolved
+    .gateway_token
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+  {
+    params["auth"] = serde_json::json!({
+      "token": token,
+    });
+  }
+
+  params
+}
+
+fn is_gateway_ws_missing_operator_scope_error(detail: &str) -> bool {
+  let normalized = detail.to_ascii_lowercase();
+  normalized.contains("missing scope: operator.write")
+    || (normalized.contains("operator.write")
+      && normalized.contains("chat.send")
+      && normalized.contains("not granted"))
+}
+
+fn is_gateway_ws_pairing_required_error(detail: &str) -> bool {
+  let normalized = detail.to_ascii_lowercase();
+  normalized.contains("pairing approval")
+    || normalized.contains("pairing required")
+    || normalized.contains("needs pairing")
+}
+
+fn load_or_create_gateway_device_identity(app_data_dir: &Path) -> Result<GatewayDeviceIdentity, String> {
+  let identity_path = app_data_dir.join("gateway").join("device.json");
+
+  if let Ok(raw) = fs::read_to_string(&identity_path) {
+    if let Ok(parsed) = serde_json::from_str::<PersistedGatewayDeviceIdentity>(&raw) {
+      if parsed.version == 1 {
+        if let Ok(pkcs8_bytes) = BASE64URL_NOPAD.decode(parsed.pkcs8.as_bytes()) {
+          if let Ok(key_pair) = Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref()) {
+            let public_key = key_pair.public_key().as_ref().to_vec();
+            let derived_device_id = sha256_hex(public_key.as_slice());
+            if derived_device_id == parsed.device_id {
+              return Ok(GatewayDeviceIdentity {
+                device_id: derived_device_id,
+                public_key: BASE64URL_NOPAD.encode(public_key.as_slice()),
+                key_pair,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if let Some(parent) = identity_path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+
+  let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+    .map_err(|_| "Claw Quest could not generate a gateway device identity for this phone.".to_string())?;
+  let pkcs8_bytes = pkcs8.as_ref().to_vec();
+  let key_pair = Ed25519KeyPair::from_pkcs8(pkcs8_bytes.as_ref())
+    .map_err(|_| "Claw Quest could not read the generated gateway device identity.".to_string())?;
+  let public_key = key_pair.public_key().as_ref().to_vec();
+  let device_id = sha256_hex(public_key.as_slice());
+  let persisted = PersistedGatewayDeviceIdentity {
+    version: 1,
+    device_id: device_id.clone(),
+    pkcs8: BASE64URL_NOPAD.encode(pkcs8_bytes.as_slice()),
+    created_at_ms: SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map(|value| value.as_millis())
+      .unwrap_or(0),
+  };
+  let raw = serde_json::to_string_pretty(&persisted).map_err(|error| error.to_string())?;
+  fs::write(&identity_path, format!("{raw}\n")).map_err(|error| error.to_string())?;
+
+  Ok(GatewayDeviceIdentity {
+    device_id,
+    public_key: BASE64URL_NOPAD.encode(public_key.as_slice()),
+    key_pair,
+  })
+}
+
+fn build_gateway_device_auth_payload_v3(
+  device_id: &str,
+  client_id: &str,
+  client_mode: &str,
+  role: &str,
+  scopes: &[&str],
+  signed_at_ms: u128,
+  token: Option<&str>,
+  nonce: &str,
+  platform: &str,
+  device_family: &str,
+) -> String {
+  let scopes = scopes.join(",");
+  let token = token.unwrap_or("").trim();
+  let platform = platform.trim().to_ascii_lowercase();
+  let device_family = device_family.trim().to_ascii_lowercase();
+  [
+    "v3".to_string(),
+    device_id.trim().to_string(),
+    client_id.trim().to_string(),
+    client_mode.trim().to_string(),
+    role.trim().to_string(),
+    scopes,
+    signed_at_ms.to_string(),
+    token.to_string(),
+    nonce.trim().to_string(),
+    platform,
+    device_family,
+  ]
+  .join("|")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+  let digest = digest::digest(&digest::SHA256, bytes);
+  digest
+    .as_ref()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>()
+}
+
+fn next_gateway_request_id(prefix: &str) -> String {
+  let ts = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|value| value.as_millis())
+    .unwrap_or(0);
+  format!("clawquest-{prefix}-{ts}")
+}
+
+async fn send_gateway_ws_request(
+  progress: &QuestProgressReporter,
+  socket: &mut GatewayWsStream,
+  id: &str,
+  method: &str,
+  params: serde_json::Value,
+) -> Result<(), String> {
+  let frame = serde_json::json!({
+    "type": "req",
+    "id": id,
+    "method": method,
+    "params": params,
+  });
+  let text = serde_json::to_string(&frame).map_err(|error| error.to_string())?;
+  await_gateway_future(progress, async {
+    socket
+      .send(Message::Text(text.into()))
+      .await
+      .map_err(|error| error.to_string())
+  })
+  .await
+}
+
+async fn await_gateway_ws_response(
+  progress: &QuestProgressReporter,
+  socket: &mut GatewayWsStream,
+  expected_id: &str,
+) -> Result<GatewayWsResponse, String> {
+  loop {
+    let frame = await_gateway_ws_json_frame(progress, socket).await?;
+    if frame.get("type").and_then(|value| value.as_str()) != Some("res") {
+      continue;
+    }
+
+    if frame.get("id").and_then(|value| value.as_str()) != Some(expected_id) {
+      continue;
+    }
+
+    let ok = frame.get("ok").and_then(|value| value.as_bool()).unwrap_or(false);
+    let payload = frame.get("payload").cloned();
+    let error_message = frame
+      .get("error")
+      .and_then(|error| {
+        error
+          .get("message")
+          .and_then(|value| value.as_str())
+          .or_else(|| error.as_str())
+      })
+      .map(|value| value.trim().to_string())
+      .filter(|value| !value.is_empty());
+    let error_details = frame
+      .get("error")
+      .and_then(|error| error.get("details"))
+      .cloned();
+    return Ok(GatewayWsResponse {
+      ok,
+      payload,
+      error_message,
+      error_details,
+    });
+  }
+}
+
+async fn await_gateway_ws_chat_reply(
+  progress: &QuestProgressReporter,
+  socket: &mut GatewayWsStream,
+  expected_run_id: &str,
+) -> Result<String, String> {
+  let mut reply = String::new();
+
+  loop {
+    let frame = await_gateway_ws_json_frame(progress, socket).await?;
+    if !matches!(
+      frame.get("type").and_then(|value| value.as_str()),
+      Some("event") | Some("evt")
+    ) {
+      continue;
+    }
+
+    if frame.get("event").and_then(|value| value.as_str()) != Some("chat") {
+      continue;
+    }
+
+    let Some(payload) = frame.get("payload") else {
+      continue;
+    };
+    let Some(run_id) = payload.get("runId").and_then(|value| value.as_str()) else {
+      continue;
+    };
+    if run_id != expected_run_id {
+      continue;
+    }
+
+    let state = payload.get("state").and_then(|value| value.as_str()).unwrap_or("");
+    match state {
+      "delta" | "final" => {
+        if let Some(next_reply) = payload
+          .get("message")
+          .and_then(|message| message.get("content"))
+          .and_then(extract_gateway_message_content)
+          .map(|value| value.trim().to_string())
+          .filter(|value| !value.is_empty())
+        {
+          reply = next_reply;
+        }
+
+        if state == "final" {
+          if reply.trim().is_empty() {
+            return Err("The OpenClaw Gateway returned no readable reply.".to_string());
+          }
+          return Ok(reply);
+        }
+      }
+      "aborted" => {
+        return Err("The OpenClaw Gateway aborted the quest before OpenClaw produced a reply.".to_string());
+      }
+      "error" => {
+        let detail = payload
+          .get("error")
+          .and_then(|value| value.as_str())
+          .or_else(|| {
+            payload
+              .get("message")
+              .and_then(|message| message.get("error"))
+              .and_then(|value| value.as_str())
+          })
+          .map(|value| value.trim().to_string())
+          .filter(|value| !value.is_empty())
+          .unwrap_or_else(|| "The OpenClaw Gateway reported a chat error.".to_string());
+        return Err(detail);
+      }
+      _ => {}
+    }
+  }
+}
+
+async fn await_gateway_ws_json_frame(
+  progress: &QuestProgressReporter,
+  socket: &mut GatewayWsStream,
+) -> Result<serde_json::Value, String> {
+  loop {
+    let message = await_gateway_future(progress, async {
+      socket
+        .next()
+        .await
+        .ok_or_else(|| "The OpenClaw Gateway connection closed before a reply arrived.".to_string())?
+        .map_err(|error| error.to_string())
+    })
+    .await?;
+
+    match message {
+      Message::Text(text) => {
+        return serde_json::from_str::<serde_json::Value>(&text)
+          .map_err(|error| format!("The OpenClaw Gateway returned unreadable websocket data.\n\n{error}"));
+      }
+      Message::Binary(bytes) => {
+        let text = String::from_utf8(bytes.to_vec())
+          .map_err(|error| format!("The OpenClaw Gateway returned unreadable binary websocket data.\n\n{error}"))?;
+        return serde_json::from_str::<serde_json::Value>(&text)
+          .map_err(|error| format!("The OpenClaw Gateway returned unreadable websocket data.\n\n{error}"));
+      }
+      Message::Ping(bytes) => {
+        await_gateway_future(progress, async {
+          socket
+            .send(Message::Pong(bytes))
+            .await
+            .map_err(|error| error.to_string())
+        })
+        .await?;
+      }
+      Message::Pong(_) => {}
+      Message::Close(frame) => {
+        let reason = frame
+          .map(|value| value.reason.to_string())
+          .filter(|value| !value.trim().is_empty())
+          .unwrap_or_else(|| "no reason provided".to_string());
+        return Err(format!(
+          "The OpenClaw Gateway websocket closed before the quest finished. {reason}"
+        ));
+      }
+      _ => {}
+    }
+  }
+}
+
+fn format_gateway_ws_request_failure(
+  method: &str,
+  endpoint: &reqwest::Url,
+  response: &GatewayWsResponse,
+) -> String {
+  let endpoint_label = endpoint.as_str();
+  if let Some(code) = response
+    .error_details
+    .as_ref()
+    .and_then(|details| details.get("code"))
+    .and_then(|value| value.as_str())
+  {
+    match code {
+      "PAIRING_REQUIRED" => {
+        return format!(
+          "The OpenClaw Gateway reached {endpoint_label}, but this phone still needs pairing approval on the gateway host before it can chat."
+        );
+      }
+      "DEVICE_IDENTITY_REQUIRED" | "CONTROL_UI_DEVICE_IDENTITY_REQUIRED" => {
+        return format!(
+          "The OpenClaw Gateway reached {endpoint_label}, but remote gateway clients must send a signed device identity. Claw Quest needs to finish the device-auth handshake for this phone."
+        );
+      }
+      "DEVICE_AUTH_NONCE_REQUIRED" | "DEVICE_AUTH_NONCE_MISMATCH" | "DEVICE_AUTH_SIGNATURE_INVALID" => {
+        return format!(
+          "The OpenClaw Gateway reached {endpoint_label}, but it rejected this phone's device signature during connect. Try again after the gateway finishes restarting, or re-pair this device if the gateway has rotated keys."
+        );
+      }
+      "AUTH_TOKEN_MISSING" | "AUTH_TOKEN_MISMATCH" | "AUTH_REQUIRED" | "AUTH_UNAUTHORIZED" => {
+        return format!(
+          "The OpenClaw Gateway rejected the token for {endpoint_label}. Recopy the gateway token or password and try again."
+        );
+      }
+      _ => {}
+    }
+  }
+  let detail = response
+    .error_message
+    .clone()
+    .filter(|value| !value.trim().is_empty())
+    .unwrap_or_else(|| format!("unknown gateway error during {method}"));
+  let normalized_detail = detail.to_lowercase();
+  if normalized_detail.contains("missing scope: operator.write") {
+    return format!(
+      "The OpenClaw Gateway connected at {endpoint_label}, but this websocket session was not granted `operator.write`, so Claw Quest could not send `chat.send`. This usually means the gateway accepted shared-token auth but still expects a paired device or broader operator access for live chat."
+    );
+  }
+  if normalized_detail.contains("invalid connect params") || normalized_detail.contains("must equal constant") {
+    return format!(
+      "The OpenClaw Gateway rejected Claw Quest's client metadata during {method} on {endpoint_label}. {detail}"
+    );
+  }
+  format!("The OpenClaw Gateway rejected {method} on {endpoint_label}. {detail}")
+}
+
+async fn await_gateway_future<T, F>(
+  progress: &QuestProgressReporter,
+  future: F,
+) -> Result<T, String>
+where
+  F: Future<Output = Result<T, String>>,
+{
+  tokio::pin!(future);
+
+  let started_at = Instant::now();
+  let mut emitted_delay_notice = false;
+  let mut emitted_long_wait_notice = false;
+
+  loop {
+    let now = Instant::now();
+    let total_runtime = now.duration_since(started_at);
+    if total_runtime >= Duration::from_secs(AGENT_MAX_RUNTIME_SECS) {
+      return Err(agent_wait_timeout_message(false, total_runtime, total_runtime));
+    }
+
+    tokio::select! {
+      result = &mut future => return result,
+      _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+    }
+
+    let elapsed = Instant::now().duration_since(started_at);
+    if !emitted_delay_notice && elapsed >= Duration::from_secs(AGENT_DELAY_NOTICE_SECS) {
+      emitted_delay_notice = true;
+      progress.emit("agent-delayed");
+    }
+
+    if !emitted_long_wait_notice && elapsed >= Duration::from_secs(AGENT_LONG_WAIT_NOTICE_SECS) {
+      emitted_long_wait_notice = true;
+      progress.emit("agent-long-wait");
+    }
+  }
+}
+
+fn format_gateway_http_failure(
+  status: reqwest::StatusCode,
+  body: &str,
+  endpoint: &reqwest::Url,
+) -> String {
+  let detail = extract_gateway_error_message(body).unwrap_or_else(|| summarize_gateway_body(body));
+  let endpoint_label = endpoint.as_str();
+
+  match status {
+    reqwest::StatusCode::NOT_FOUND => format!(
+      "The OpenClaw Gateway HTTP agent endpoint was not available at {endpoint_label}. Enable gateway.http.endpoints.chatCompletions.enabled on the gateway and try again."
+    ),
+    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => format!(
+      "The OpenClaw Gateway rejected the bearer token for {endpoint_label}. Recopy the gateway token or password and try again."
+    ),
+    reqwest::StatusCode::TOO_MANY_REQUESTS => format!(
+      "The OpenClaw Gateway rate limited this request at {endpoint_label}. Wait a moment and try again. {detail}"
+    ),
+    _ => {
+      if detail.is_empty() {
+        format!("The OpenClaw Gateway returned HTTP {} from {endpoint_label}.", status.as_u16())
+      } else {
+        format!(
+          "The OpenClaw Gateway returned HTTP {} from {endpoint_label}. {}",
+          status.as_u16(),
+          detail
+        )
+      }
+    }
+  }
+}
+
+fn extract_gateway_error_message(body: &str) -> Option<String> {
+  let value: serde_json::Value = serde_json::from_str(body).ok()?;
+  value
+    .get("error")
+    .and_then(|item| {
+      item
+        .get("message")
+        .and_then(|value| value.as_str())
+        .or_else(|| item.as_str())
+    })
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty())
+}
+
+fn summarize_gateway_body(body: &str) -> String {
+  let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+  if collapsed.len() <= 280 {
+    collapsed
+  } else {
+    format!("{}...", collapsed.chars().take(277).collect::<String>())
+  }
+}
+
+fn extract_gateway_chat_completion_reply(body: &str) -> Result<String, String> {
+  let parsed: GatewayChatCompletionsResponse = serde_json::from_str(body)
+    .map_err(|error| format!("The OpenClaw Gateway returned unreadable chat output.\n\n{error}"))?;
+
+  let reply = parsed
+    .choices
+    .first()
+    .and_then(|choice| choice.message.as_ref())
+    .and_then(|message| extract_gateway_message_content(&message.content))
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| "The OpenClaw Gateway returned no readable reply.".to_string())?;
+
+  Ok(reply.trim().to_string())
+}
+
+fn extract_gateway_message_content(value: &serde_json::Value) -> Option<String> {
+  match value {
+    serde_json::Value::String(text) => Some(text.clone()),
+    serde_json::Value::Array(items) => {
+      let parts = items
+        .iter()
+        .filter_map(|item| match item {
+          serde_json::Value::String(text) => Some(text.trim().to_string()),
+          serde_json::Value::Object(map) => map
+            .get("text")
+            .and_then(|value| value.as_str())
+            .map(|text| text.trim().to_string()),
+          _ => None,
+        })
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+      if parts.is_empty() {
+        None
+      } else {
+        Some(parts.join("\n"))
+      }
+    }
+    serde_json::Value::Object(map) => map
+      .get("text")
+      .and_then(|value| value.as_str())
+      .map(|text| text.to_string()),
+    _ => None,
+  }
 }
 
 fn clamp_limit(limit: Option<u32>) -> u32 {
