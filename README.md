@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="docs/branding/clawquest-mascot-fullbody.png" alt="Claw Quest mascot, a pixel-art lobster holding a sword" width="260">
+</p>
+
+<p align="center">
   <img src="desktop/src/assets/claw-quest-title.png" alt="Claw Quest" width="420">
 </p>
 

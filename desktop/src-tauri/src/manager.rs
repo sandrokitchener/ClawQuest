@@ -199,6 +199,14 @@ pub struct InstallOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct QuestOutcome {
   pub reply: String,
+  pub message_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestSessionUpdate {
+  pub reply: String,
+  pub message_fingerprint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +222,12 @@ struct GatewayChatCompletionChoice {
 #[derive(Debug, Deserialize)]
 struct GatewayChatCompletionMessage {
   content: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+struct GatewayChatReply {
+  reply: String,
+  message_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -893,6 +907,30 @@ pub async fn send_openclaw_prompt(
   }
 }
 
+#[tauri::command]
+pub async fn poll_remote_gateway_session_update(
+  window: tauri::Window,
+  config: Option<ManagerConfig>,
+  after_fingerprint: Option<String>,
+) -> Result<Option<QuestSessionUpdate>, String> {
+  let resolved = resolve_manager_config(config)?;
+  if resolved.connection_mode.as_str() != "remote" || !should_use_direct_remote_gateway_transport() {
+    return Ok(None);
+  }
+
+  let app_data_dir = window
+    .app_handle()
+    .path()
+    .app_data_dir()
+    .map_err(|error| error.to_string())?;
+  poll_remote_gateway_session_update_direct(
+    &resolved,
+    &app_data_dir,
+    after_fingerprint.as_deref(),
+  )
+  .await
+}
+
 async fn send_prompt_via_local_runner(
   progress: &QuestProgressReporter,
   resolved: &ResolvedManagerConfig,
@@ -927,6 +965,7 @@ async fn send_prompt_via_local_runner(
       cache_runner(&cache_key, &initial_runner);
       return Ok(QuestOutcome {
         reply,
+        message_fingerprint: None,
       });
     }
     Err(error) => {
@@ -954,6 +993,7 @@ async fn send_prompt_via_local_runner(
       cache_runner(&cache_key, &fallback_runner);
       return Ok(QuestOutcome {
         reply,
+        message_fingerprint: None,
       });
     }
   }
@@ -996,6 +1036,132 @@ async fn send_prompt_via_remote_gateway_direct(
     "http" | "https" => send_prompt_via_remote_gateway_http(progress, resolved, prompt).await,
     _ => Err("The Gateway URL must start with http://, https://, ws://, or wss://.".to_string()),
   }
+}
+
+async fn poll_remote_gateway_session_update_direct(
+  resolved: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+  after_fingerprint: Option<&str>,
+) -> Result<Option<QuestSessionUpdate>, String> {
+  let gateway_url = resolved
+    .gateway_url
+    .as_ref()
+    .map(|value| value.trim())
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| "Enter a Gateway URL first.".to_string())?;
+
+  let parsed = reqwest::Url::parse(gateway_url)
+    .map_err(|_| "The Gateway URL is not valid. Use a full address like wss://gateway.example.com or ws://192.168.1.20:18789.".to_string())?;
+
+  match parsed.scheme() {
+    "ws" | "wss" => {
+      poll_remote_gateway_session_update_websocket(resolved, app_data_dir, after_fingerprint).await
+    }
+    _ => Ok(None),
+  }
+}
+
+async fn poll_remote_gateway_session_update_websocket(
+  resolved: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+  after_fingerprint: Option<&str>,
+) -> Result<Option<QuestSessionUpdate>, String> {
+  let gateway_url = remote_gateway_websocket_url(resolved)?;
+  let mut socket = connect_remote_gateway_websocket_for_session(resolved, &gateway_url, app_data_dir).await?;
+  let history_request_id = next_gateway_request_id("chat-history");
+  let history_params = serde_json::json!({
+    "sessionKey": MOBILE_GATEWAY_SESSION_KEY,
+    "limit": 60,
+  });
+  send_gateway_ws_request(
+    None,
+    &mut socket,
+    &history_request_id,
+    "chat.history",
+    history_params,
+  )
+  .await?;
+
+  let history_response = await_gateway_ws_response(None, &mut socket, &history_request_id).await?;
+  if !history_response.ok {
+    return Err(format_gateway_ws_request_failure(
+      "chat.history",
+      &gateway_url,
+      &history_response,
+    ));
+  }
+
+  let Some(update) = history_response
+    .payload
+    .as_ref()
+    .and_then(extract_latest_gateway_session_update)
+  else {
+    return Ok(None);
+  };
+
+  let normalized_after = after_fingerprint
+    .map(str::trim)
+    .filter(|value| !value.is_empty());
+  if normalized_after == Some(update.message_fingerprint.as_str()) {
+    return Ok(None);
+  }
+
+  Ok(Some(update))
+}
+
+async fn connect_remote_gateway_websocket_for_session(
+  resolved: &ResolvedManagerConfig,
+  gateway_url: &reqwest::Url,
+  app_data_dir: &Path,
+) -> Result<GatewayWsStream, String> {
+  let has_shared_token = resolved
+    .gateway_token
+    .as_ref()
+    .map(|value| !value.trim().is_empty())
+    .unwrap_or(false);
+
+  if has_shared_token {
+    if let Ok(socket) = connect_authenticated_gateway_socket(None, resolved, gateway_url, None).await {
+      return Ok(socket);
+    }
+  }
+
+  let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
+  connect_authenticated_gateway_socket(None, resolved, gateway_url, Some(&device_identity)).await
+}
+
+async fn connect_authenticated_gateway_socket(
+  progress: Option<&QuestProgressReporter>,
+  resolved: &ResolvedManagerConfig,
+  gateway_url: &reqwest::Url,
+  device_identity: Option<&GatewayDeviceIdentity>,
+) -> Result<GatewayWsStream, String> {
+  let gateway_url_string = gateway_url.to_string();
+  let (mut socket, _) = await_gateway_future(progress, async {
+    connect_async(gateway_url_string)
+      .await
+      .map_err(|error| error.to_string())
+  })
+  .await?;
+
+  let nonce = await_gateway_websocket_connect_challenge(progress, &mut socket).await?;
+  let connect_request_id = next_gateway_request_id("connect");
+  let connect_params = build_gateway_connect_params(resolved, &nonce, device_identity);
+  send_gateway_ws_request(
+    progress,
+    &mut socket,
+    &connect_request_id,
+    "connect",
+    connect_params,
+  )
+  .await?;
+
+  let connect_response = await_gateway_ws_response(progress, &mut socket, &connect_request_id).await?;
+  if !connect_response.ok {
+    return Err(format_gateway_ws_request_failure("connect", gateway_url, &connect_response));
+  }
+
+  Ok(socket)
 }
 
 async fn send_prompt_via_remote_gateway_websocket(
@@ -1068,30 +1234,13 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
   gateway_url: &reqwest::Url,
   device_identity: Option<&GatewayDeviceIdentity>,
 ) -> Result<QuestOutcome, String> {
-  let gateway_url_string = gateway_url.to_string();
-  let (mut socket, _) = await_gateway_future(progress, async {
-    connect_async(gateway_url_string)
-      .await
-      .map_err(|error| error.to_string())
-  })
-  .await?;
-
-  let nonce = await_gateway_websocket_connect_challenge(progress, &mut socket).await?;
-  let connect_request_id = next_gateway_request_id("connect");
-  let connect_params = build_gateway_connect_params(resolved, &nonce, device_identity);
-  send_gateway_ws_request(
-    progress,
-    &mut socket,
-    &connect_request_id,
-    "connect",
-    connect_params,
+  let mut socket = connect_authenticated_gateway_socket(
+    Some(progress),
+    resolved,
+    gateway_url,
+    device_identity,
   )
   .await?;
-
-  let connect_response = await_gateway_ws_response(progress, &mut socket, &connect_request_id).await?;
-  if !connect_response.ok {
-    return Err(format_gateway_ws_request_failure("connect", gateway_url, &connect_response));
-  }
 
   progress.emit("agent-working");
   let run_id = next_gateway_request_id("run");
@@ -1103,7 +1252,7 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
     "timeoutMs": AGENT_MAX_RUNTIME_SECS * 1000,
   });
   send_gateway_ws_request(
-    progress,
+    Some(progress),
     &mut socket,
     &chat_send_request_id,
     "chat.send",
@@ -1111,7 +1260,7 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
   )
   .await?;
 
-  let chat_send_response = await_gateway_ws_response(progress, &mut socket, &chat_send_request_id).await?;
+  let chat_send_response = await_gateway_ws_response(Some(progress), &mut socket, &chat_send_request_id).await?;
   if !chat_send_response.ok {
     return Err(format_gateway_ws_request_failure(
       "chat.send",
@@ -1128,9 +1277,12 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
     .filter(|value| !value.trim().is_empty())
     .unwrap_or(run_id.as_str())
     .to_string();
-  let reply = await_gateway_ws_chat_reply(progress, &mut socket, &expected_run_id).await?;
+  let reply = await_gateway_ws_chat_reply(Some(progress), &mut socket, &expected_run_id).await?;
   progress.emit("agent-output");
-  Ok(QuestOutcome { reply })
+  Ok(QuestOutcome {
+    reply: reply.reply,
+    message_fingerprint: Some(reply.message_fingerprint),
+  })
 }
 
 async fn send_prompt_via_remote_gateway_http(
@@ -1165,13 +1317,13 @@ async fn send_prompt_via_remote_gateway_http(
   }
 
   progress.emit("agent-working");
-  let response = await_gateway_future(progress, async {
+  let response = await_gateway_future(Some(progress), async {
     request.send().await.map_err(|error| error.to_string())
   })
   .await?;
 
   let status = response.status();
-  let body = await_gateway_future(progress, async {
+  let body = await_gateway_future(Some(progress), async {
     response.text().await.map_err(|error| error.to_string())
   })
   .await?;
@@ -1182,7 +1334,10 @@ async fn send_prompt_via_remote_gateway_http(
 
   let reply = extract_gateway_chat_completion_reply(&body)?;
   progress.emit("agent-output");
-  Ok(QuestOutcome { reply })
+  Ok(QuestOutcome {
+    reply,
+    message_fingerprint: None,
+  })
 }
 
 async fn send_prompt_via_docker(
@@ -1200,6 +1355,7 @@ async fn send_prompt_via_docker(
   match run_docker_prompt(progress, resolved, prompt, &agent_id, &container).await {
     Ok(reply) => Ok(QuestOutcome {
       reply,
+      message_fingerprint: None,
     }),
     Err(error) => {
       if !is_retryable_openclaw_runner_error(&error) {
@@ -1236,6 +1392,7 @@ async fn send_prompt_via_docker(
       let reply = run_docker_prompt(progress, resolved, prompt, &agent_id, &container).await?;
       Ok(QuestOutcome {
         reply,
+        message_fingerprint: None,
       })
     }
   }
@@ -3686,7 +3843,7 @@ struct GatewayWsResponse {
 }
 
 async fn await_gateway_websocket_connect_challenge(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   socket: &mut GatewayWsStream,
 ) -> Result<String, String> {
   loop {
@@ -3901,7 +4058,7 @@ fn next_gateway_request_id(prefix: &str) -> String {
 }
 
 async fn send_gateway_ws_request(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   socket: &mut GatewayWsStream,
   id: &str,
   method: &str,
@@ -3924,7 +4081,7 @@ async fn send_gateway_ws_request(
 }
 
 async fn await_gateway_ws_response(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   socket: &mut GatewayWsStream,
   expected_id: &str,
 ) -> Result<GatewayWsResponse, String> {
@@ -3964,10 +4121,10 @@ async fn await_gateway_ws_response(
 }
 
 async fn await_gateway_ws_chat_reply(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   socket: &mut GatewayWsStream,
   expected_run_id: &str,
-) -> Result<String, String> {
+) -> Result<GatewayChatReply, String> {
   let mut reply = String::new();
 
   loop {
@@ -4010,7 +4167,10 @@ async fn await_gateway_ws_chat_reply(
           if reply.trim().is_empty() {
             return Err("The OpenClaw Gateway returned no readable reply.".to_string());
           }
-          return Ok(reply);
+          return Ok(GatewayChatReply {
+            message_fingerprint: fingerprint_gateway_reply(&reply),
+            reply,
+          });
         }
       }
       "aborted" => {
@@ -4037,7 +4197,7 @@ async fn await_gateway_ws_chat_reply(
 }
 
 async fn await_gateway_ws_json_frame(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   socket: &mut GatewayWsStream,
 ) -> Result<serde_json::Value, String> {
   loop {
@@ -4141,7 +4301,7 @@ fn format_gateway_ws_request_failure(
 }
 
 async fn await_gateway_future<T, F>(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   future: F,
 ) -> Result<T, String>
 where
@@ -4168,12 +4328,16 @@ where
     let elapsed = Instant::now().duration_since(started_at);
     if !emitted_delay_notice && elapsed >= Duration::from_secs(AGENT_DELAY_NOTICE_SECS) {
       emitted_delay_notice = true;
-      progress.emit("agent-delayed");
+      if let Some(progress) = progress {
+        progress.emit("agent-delayed");
+      }
     }
 
     if !emitted_long_wait_notice && elapsed >= Duration::from_secs(AGENT_LONG_WAIT_NOTICE_SECS) {
       emitted_long_wait_notice = true;
-      progress.emit("agent-long-wait");
+      if let Some(progress) = progress {
+        progress.emit("agent-long-wait");
+      }
     }
   }
 }
@@ -4246,6 +4410,49 @@ fn extract_gateway_chat_completion_reply(body: &str) -> Result<String, String> {
     .ok_or_else(|| "The OpenClaw Gateway returned no readable reply.".to_string())?;
 
   Ok(reply.trim().to_string())
+}
+
+fn extract_latest_gateway_session_update(payload: &serde_json::Value) -> Option<QuestSessionUpdate> {
+  let messages = payload.get("messages")?.as_array()?;
+
+  messages.iter().rev().find_map(|message| {
+    let role = message
+      .get("role")
+      .and_then(|value| value.as_str())
+      .map(|value| value.trim())
+      .filter(|value| !value.is_empty())?;
+    if !role.eq_ignore_ascii_case("assistant") {
+      return None;
+    }
+
+    let reply = message
+      .get("content")
+      .and_then(extract_gateway_message_content)
+      .or_else(|| {
+        message
+          .get("text")
+          .and_then(|value| value.as_str())
+          .map(|value| value.to_string())
+      })
+      .map(|value| value.trim().to_string())
+      .filter(|value| !value.is_empty())?;
+    if is_gateway_no_reply_message(&reply) {
+      return None;
+    }
+
+    Some(QuestSessionUpdate {
+      message_fingerprint: fingerprint_gateway_reply(&reply),
+      reply,
+    })
+  })
+}
+
+fn fingerprint_gateway_reply(reply: &str) -> String {
+  sha256_hex(reply.trim().as_bytes())
+}
+
+fn is_gateway_no_reply_message(reply: &str) -> bool {
+  reply.trim().eq_ignore_ascii_case("NO_REPLY")
 }
 
 fn extract_gateway_message_content(value: &serde_json::Value) -> Option<String> {

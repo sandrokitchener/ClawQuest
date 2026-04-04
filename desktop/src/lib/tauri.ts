@@ -112,6 +112,12 @@ export type InstallOutcome = {
 
 export type QuestOutcome = {
   reply: string
+  messageFingerprint?: string | null
+}
+
+export type QuestSessionUpdate = {
+  reply: string
+  messageFingerprint: string
 }
 
 export type QuestProgressStage =
@@ -203,6 +209,16 @@ export async function sendOpenClawPrompt(config: ManagerConfig | undefined, prom
   return invoke<QuestOutcome>('send_openclaw_prompt', {
     config,
     prompt,
+  })
+}
+
+export async function pollRemoteGatewaySessionUpdate(
+  config: ManagerConfig | undefined,
+  afterFingerprint?: string | null,
+) {
+  return invoke<QuestSessionUpdate | null>('poll_remote_gateway_session_update', {
+    config,
+    afterFingerprint,
   })
 }
 

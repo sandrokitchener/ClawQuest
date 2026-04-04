@@ -39,6 +39,7 @@ import {
   listenForQuestProgress,
   loadManagerState,
   normalizeCommandError,
+  pollRemoteGatewaySessionUpdate,
   searchRegistrySkills,
   sendOpenClawPrompt,
   setDesktopWindowDocked,
@@ -50,6 +51,7 @@ import {
   type ManagerState,
   type OpenClawTarget,
   type QuestProgressEvent,
+  type QuestSessionUpdate,
   type RegistrySkill,
   type SkillRoot,
 } from './lib/tauri'
@@ -206,6 +208,7 @@ const CATALOG_RATE_LIMIT_FALLBACK_MS = 30_000
 const QUEST_BUBBLE_PROGRESS_MS = 10_400
 const QUEST_BUBBLE_ROTATION_GUARD_MS = 1800
 const QUEST_PROGRESS_EVENT_MIN_MS = 9000
+const MOBILE_QUEST_SESSION_POLL_MS = 4500
 const MOBILE_SHELL_BREAKPOINT_PX = 860
 const MOBILE_PREVIEW_QUEST_DELAY_MS = 900
 const AGENT_RACE_OPTIONS: AgentRace[] = ['elf', 'orc', 'human', 'halfling', 'tiefling', 'goblin']
@@ -813,6 +816,8 @@ export default function App() {
   })
   const questLogIdRef = useRef(0)
   const questProgressStagesSeenRef = useRef<Set<string>>(new Set())
+  const mobileQuestLastFingerprintRef = useRef<string | null>(null)
+  const mobileQuestPollInFlightRef = useRef(false)
   const toolsPaneScrollFrameRef = useRef<number | null>(null)
   const shellViewportRef = useRef<HTMLElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
@@ -1094,6 +1099,92 @@ export default function App() {
     questProgressStagesSeenRef.current = new Set()
     setQuestLogEntries(entries.map((entry) => createQuestLogEntry(entry)))
   }
+
+  function handleMobileQuestSessionUpdate(update: QuestSessionUpdate) {
+    const replyNotice = formatQuestReplyForNotice(update.reply, displayedAgentClass)
+    setQuestError('')
+    setQuestMood('returned')
+    setQuestBubble(returnedBubbleForClass(displayedAgentClass))
+    setNotice(`Quest complete.\n${replyNotice}`)
+    triggerAvatarSpeaking()
+    playUiSound('goodNews')
+    appendQuestLogEntries([
+      {
+        tone: 'clean',
+        title: 'Quest update arrived',
+        detail: summarizeQuestTextForLog(replyNotice, 220),
+      },
+    ])
+  }
+
+  useEffect(() => {
+    if (!runtime || !isMobileShell || activeConnectionMode !== 'remote' || !appliedConfig?.gatewayUrl) {
+      mobileQuestLastFingerprintRef.current = null
+      mobileQuestPollInFlightRef.current = false
+      return
+    }
+
+    let cancelled = false
+
+    const pollForMobileQuestUpdate = async () => {
+      if (cancelled || questBusy || mobileQuestPollInFlightRef.current) {
+        return
+      }
+
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return
+      }
+
+      mobileQuestPollInFlightRef.current = true
+
+      try {
+        const nextUpdate = await pollRemoteGatewaySessionUpdate(
+          appliedConfig,
+          mobileQuestLastFingerprintRef.current,
+        )
+        if (cancelled || !nextUpdate) {
+          return
+        }
+
+        const hadBaseline = Boolean(mobileQuestLastFingerprintRef.current)
+        mobileQuestLastFingerprintRef.current = nextUpdate.messageFingerprint
+        if (!hadBaseline) {
+          return
+        }
+
+        handleMobileQuestSessionUpdate(nextUpdate)
+      } catch {
+        // Quiet mobile polling should not interrupt the shell when the gateway blips.
+      } finally {
+        mobileQuestPollInFlightRef.current = false
+      }
+    }
+
+    void pollForMobileQuestUpdate()
+    const intervalId = window.setInterval(() => {
+      void pollForMobileQuestUpdate()
+    }, MOBILE_QUEST_SESSION_POLL_MS)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void pollForMobileQuestUpdate()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      cancelled = true
+      mobileQuestPollInFlightRef.current = false
+      window.clearInterval(intervalId)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [
+    activeConnectionMode,
+    appliedConfig,
+    displayedAgentClass,
+    isMobileShell,
+    questBusy,
+    runtime,
+  ])
 
   useEffect(() => {
     if (questBubbleIntervalRef.current !== null) {
@@ -1801,6 +1892,9 @@ export default function App() {
       }
 
       const outcome = await sendOpenClawPrompt(appliedConfig, prompt)
+      if (isMobileShell && activeConnectionMode === 'remote') {
+        mobileQuestLastFingerprintRef.current = outcome.messageFingerprint?.trim() || null
+      }
       const nextQuestCount = questsCompleted + 1
       const previousLevel = progress.level
       const nextProgress = deriveAdventurerProgress(nextQuestCount)
