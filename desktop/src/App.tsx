@@ -1105,7 +1105,7 @@ export default function App() {
     setQuestError('')
     setQuestMood('returned')
     setQuestBubble(returnedBubbleForClass(displayedAgentClass))
-    setNotice(`Quest complete.\n${replyNotice}`)
+    setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass))
     triggerAvatarSpeaking()
     playUiSound('goodNews')
     appendQuestLogEntries([
@@ -1876,11 +1876,7 @@ export default function App() {
         triggerAvatarSpeaking()
         setQuestDraft('')
         playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-        setNotice(
-          nextProgress.level > previousLevel
-            ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
-            : replyNotice,
-        )
+        setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass, nextProgress.level > previousLevel ? nextProgress.level : null))
         appendQuestLogEntries([
           {
             tone: 'clean',
@@ -1912,11 +1908,7 @@ export default function App() {
       triggerAvatarSpeaking()
       setQuestDraft('')
       playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-      setNotice(
-        nextProgress.level > previousLevel
-          ? `Level up! Lv. ${nextProgress.level}.\n${replyNotice}`
-          : replyNotice,
-      )
+      setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass, nextProgress.level > previousLevel ? nextProgress.level : null))
       appendQuestLogEntries([
         {
           tone: 'clean',
@@ -4457,6 +4449,34 @@ function formatQuestReplyForNotice(reply: string, agentClass: AgentClass) {
   }
 
   return normalized
+}
+
+function formatQuestCompletionNotice(reply: string, agentClass: AgentClass, levelUpTo?: number | null) {
+  const lines = [questCompletionLeadForClass(agentClass)]
+
+  if (typeof levelUpTo === 'number' && Number.isFinite(levelUpTo)) {
+    lines.push(`Level up! Lv. ${levelUpTo}.`)
+  }
+
+  const normalizedReply = reply.trim()
+  if (normalizedReply) {
+    lines.push(normalizedReply)
+  }
+
+  return lines.join('\n')
+}
+
+function questCompletionLeadForClass(agentClass: AgentClass) {
+  switch (agentClass) {
+    case 'paladin':
+      return "I have completed my quest, m'lord."
+    case 'cleric':
+      return 'I have completed my quest in peace.'
+    case 'ranger':
+      return 'I have completed my quest and returned from the trail.'
+    case 'rogue':
+      return 'I have completed my quest and slipped back unseen.'
+  }
 }
 
 function questDepartureBubble(prompt: string, agentClass: AgentClass, connectionMode: ConnectionMode) {
