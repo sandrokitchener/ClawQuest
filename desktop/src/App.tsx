@@ -161,6 +161,22 @@ const EMPTY_DRAFT: DraftConfig = {
 const clawQuestWordmarkUrl = new URL('./assets/claw-quest-title.png', import.meta.url).href
 const BACKGROUND_MUSIC_URL = new URL('./assets/crpg-loop.wav', import.meta.url).href
 const BACKGROUND_MUSIC_VOLUME = 0.18
+const BACKGROUND_MUSIC_PLAYBACK_RATE = 0.92
+type PitchShiftableAudio = HTMLAudioElement & {
+  mozPreservesPitch?: boolean
+  preservesPitch?: boolean
+  webkitPreservesPitch?: boolean
+}
+
+function tuneBackgroundMusic(audio: HTMLAudioElement, volume: number) {
+  const tonalAudio = audio as PitchShiftableAudio
+  tonalAudio.volume = volume
+  tonalAudio.playbackRate = BACKGROUND_MUSIC_PLAYBACK_RATE
+  tonalAudio.preservesPitch = false
+  tonalAudio.mozPreservesPitch = false
+  tonalAudio.webkitPreservesPitch = false
+}
+
 const UI_SOUND_URLS: Record<UiSound, string> = {
   blip: new URL('./assets/blip.wav', import.meta.url).href,
   coin: new URL('./assets/coin.wav', import.meta.url).href,
@@ -208,7 +224,7 @@ const CATALOG_RATE_LIMIT_FALLBACK_MS = 30_000
 const QUEST_BUBBLE_PROGRESS_MS = 10_400
 const QUEST_BUBBLE_ROTATION_GUARD_MS = 1800
 const QUEST_PROGRESS_EVENT_MIN_MS = 9000
-const MOBILE_QUEST_SESSION_POLL_MS = 4500
+const MOBILE_QUEST_SESSION_POLL_MS = 1800
 const MOBILE_SHELL_BREAKPOINT_PX = 860
 const MOBILE_PREVIEW_QUEST_DELAY_MS = 900
 const AGENT_RACE_OPTIONS: AgentRace[] = ['elf', 'orc', 'human', 'halfling', 'tiefling', 'goblin']
@@ -1250,7 +1266,7 @@ export default function App() {
     const audio = new Audio(BACKGROUND_MUSIC_URL)
     audio.preload = 'auto'
     audio.loop = true
-    audio.volume = BACKGROUND_MUSIC_VOLUME
+    tuneBackgroundMusic(audio, BACKGROUND_MUSIC_VOLUME)
     backgroundMusicRef.current = audio
 
     const handleUserActivation = () => {
@@ -1387,7 +1403,7 @@ export default function App() {
       return
     }
 
-    audio.volume = BACKGROUND_MUSIC_VOLUME
+    tuneBackgroundMusic(audio, BACKGROUND_MUSIC_VOLUME)
     void audio.play().catch(() => {})
   }
 

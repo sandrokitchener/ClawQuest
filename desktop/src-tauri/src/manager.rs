@@ -53,6 +53,7 @@ const MOBILE_GATEWAY_OPERATOR_SCOPES: &[&str] = &["operator.read", "operator.wri
 const MOBILE_GATEWAY_SESSION_USER: &str = "claw-quest-mobile";
 // "main" is the gateway's canonical default chat session alias.
 const MOBILE_GATEWAY_SESSION_KEY: &str = "main";
+const MOBILE_GATEWAY_HISTORY_POLL_LIMIT: u64 = 16;
 static RUNNER_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 
 type GatewayWsStream = tokio_tungstenite::WebSocketStream<
@@ -1071,7 +1072,7 @@ async fn poll_remote_gateway_session_update_websocket(
   let history_request_id = next_gateway_request_id("chat-history");
   let history_params = serde_json::json!({
     "sessionKey": MOBILE_GATEWAY_SESSION_KEY,
-    "limit": 60,
+    "limit": MOBILE_GATEWAY_HISTORY_POLL_LIMIT,
   });
   send_gateway_ws_request(
     None,

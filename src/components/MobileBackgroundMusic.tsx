@@ -5,6 +5,22 @@ const MOBILE_AUDIO_STORAGE_KEY = 'clawhub-mobile-background-music-muted-v1'
 const MOBILE_AUDIO_MEDIA_QUERY = '(max-width: 960px), (hover: none) and (pointer: coarse)'
 const MOBILE_AUDIO_URL = '/crpg-loop.wav'
 const MOBILE_AUDIO_VOLUME = 0.14
+const MOBILE_AUDIO_PLAYBACK_RATE = 0.92
+
+type PitchShiftableAudio = HTMLAudioElement & {
+  mozPreservesPitch?: boolean
+  preservesPitch?: boolean
+  webkitPreservesPitch?: boolean
+}
+
+function tuneBackgroundMusic(audio: HTMLAudioElement) {
+  const tonalAudio = audio as PitchShiftableAudio
+  tonalAudio.volume = MOBILE_AUDIO_VOLUME
+  tonalAudio.playbackRate = MOBILE_AUDIO_PLAYBACK_RATE
+  tonalAudio.preservesPitch = false
+  tonalAudio.mozPreservesPitch = false
+  tonalAudio.webkitPreservesPitch = false
+}
 
 export function MobileBackgroundMusic() {
   const [muted, setMuted] = useState(() => readStoredMuted())
@@ -24,7 +40,7 @@ export function MobileBackgroundMusic() {
       return
     }
 
-    audio.volume = MOBILE_AUDIO_VOLUME
+    tuneBackgroundMusic(audio)
     void audio.play().catch(() => {})
   }
 
@@ -74,7 +90,7 @@ export function MobileBackgroundMusic() {
     const audio = new Audio(MOBILE_AUDIO_URL)
     audio.preload = 'auto'
     audio.loop = true
-    audio.volume = MOBILE_AUDIO_VOLUME
+    tuneBackgroundMusic(audio)
     audioRef.current = audio
 
     const activateAudio = () => {
