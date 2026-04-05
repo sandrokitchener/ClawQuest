@@ -53,7 +53,9 @@ const MOBILE_GATEWAY_OPERATOR_SCOPES: &[&str] = &["operator.read", "operator.wri
 const MOBILE_GATEWAY_SESSION_USER: &str = "claw-quest-mobile";
 // "main" is the gateway's canonical default chat session alias.
 const MOBILE_GATEWAY_SESSION_KEY: &str = "main";
-const MOBILE_GATEWAY_HISTORY_POLL_LIMIT: u64 = 16;
+const MOBILE_GATEWAY_MANAGER_SESSION_KEY: &str = "clawquest-manager";
+const MOBILE_GATEWAY_HISTORY_POLL_LIMIT: u64 = 8;
+const MOBILE_GATEWAY_SESSION_SUBSCRIBE_WAIT_MS: u64 = 20_000;
 static RUNNER_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 
 type GatewayWsStream = tokio_tungstenite::WebSocketStream<
@@ -73,6 +75,13 @@ struct GatewayDeviceIdentity {
   device_id: String,
   public_key: String,
   key_pair: Ed25519KeyPair,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedGatewayTransportHints {
+  version: u8,
+  prefer_device_for_chat_send: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -206,8 +215,65 @@ pub struct QuestOutcome {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuestSessionUpdate {
-  pub reply: String,
-  pub message_fingerprint: String,
+  pub reply: Option<String>,
+  pub message_fingerprint: Option<String>,
+  pub summary: Option<String>,
+  pub status: Option<String>,
+  pub runtime_ms: Option<u64>,
+  pub display_name: Option<String>,
+  pub waiting_for_approval: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewaySkillsStatusPayload {
+  workspace_dir: Option<String>,
+  managed_skills_dir: Option<String>,
+  #[serde(default)]
+  skills: Vec<GatewaySkillStatusEntry>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayAgentIdentityPayload {
+  name: Option<String>,
+  display_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewaySkillStatusEntry {
+  name: Option<String>,
+  description: Option<String>,
+  source: Option<String>,
+  #[serde(default)]
+  bundled: bool,
+  file_path: Option<String>,
+  base_dir: Option<String>,
+  skill_key: Option<String>,
+  #[serde(default)]
+  disabled: bool,
+  #[serde(default)]
+  blocked_by_allowlist: bool,
+  #[serde(default)]
+  eligible: bool,
+  #[serde(default)]
+  missing: GatewaySkillMissingRequirements,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewaySkillMissingRequirements {
+  #[serde(default)]
+  bins: Vec<String>,
+  #[serde(default)]
+  any_bins: Vec<String>,
+  #[serde(default)]
+  env: Vec<String>,
+  #[serde(default)]
+  config: Vec<String>,
+  #[serde(default)]
+  os: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -599,9 +665,21 @@ struct ModerationDetail {
 }
 
 #[tauri::command]
-pub async fn load_manager_state(config: Option<ManagerConfig>) -> Result<ManagerState, String> {
+pub async fn load_manager_state(
+  window: tauri::Window,
+  config: Option<ManagerConfig>,
+) -> Result<ManagerState, String> {
   let resolved = resolve_manager_config(config)?;
-  build_manager_state(&resolved).await
+  if should_use_remote_gateway_manager_transport(&resolved) {
+    let app_data_dir = window
+      .app_handle()
+      .path()
+      .app_data_dir()
+      .map_err(|error| error.to_string())?;
+    build_remote_gateway_manager_state(&resolved, &app_data_dir).await
+  } else {
+    build_manager_state(&resolved).await
+  }
 }
 
 #[tauri::command]
@@ -704,6 +782,7 @@ pub async fn search_registry_skills(
 
 #[tauri::command]
 pub async fn install_registry_skill(
+  window: tauri::Window,
   config: Option<ManagerConfig>,
   slug: String,
   version: Option<String>,
@@ -759,6 +838,21 @@ pub async fn install_registry_skill(
     .map(str::to_string)
     .or_else(|| meta.latest_version.map(|item| item.version))
     .ok_or_else(|| format!("Could not resolve a version for {safe_slug}."))?;
+
+  if should_use_remote_gateway_manager_transport(&resolved) {
+    let app_data_dir = window
+      .app_handle()
+      .path()
+      .app_data_dir()
+      .map_err(|error| error.to_string())?;
+    return install_registry_skill_via_remote_gateway(
+      &resolved,
+      &app_data_dir,
+      &safe_slug,
+      &resolved_version,
+    )
+    .await;
+  }
 
   fs::create_dir_all(&resolved.skills_dir).map_err(|error| error.to_string())?;
 
@@ -851,12 +945,25 @@ pub async fn install_registry_skill(
 
 #[tauri::command]
 pub async fn uninstall_registry_skill(
+  window: tauri::Window,
   config: Option<ManagerConfig>,
   slug: String,
   path: Option<String>,
 ) -> Result<ActionOutcome, String> {
   let resolved = resolve_manager_config(config)?;
   let safe_slug = sanitize_slug(&slug)?;
+  if should_use_remote_gateway_manager_transport(&resolved) {
+    let gateway_url = resolved
+      .gateway_url
+      .as_deref()
+      .map(str::trim)
+      .filter(|value| !value.is_empty())
+      .unwrap_or("the linked gateway");
+    let _ = window;
+    return Err(format!(
+      "Removing gateway-host skills from Android is not wired up yet. Remove {safe_slug} from {gateway_url} on the OpenClaw host for now."
+    ));
+  }
   let target_dir = resolve_uninstall_target(&resolved, &safe_slug, path)?;
   let default_target = normalized_path(&resolved.skills_dir.join(&safe_slug));
 
@@ -1069,25 +1176,54 @@ async fn poll_remote_gateway_session_update_websocket(
 ) -> Result<Option<QuestSessionUpdate>, String> {
   let gateway_url = remote_gateway_websocket_url(resolved)?;
   let mut socket = connect_remote_gateway_websocket_for_session(resolved, &gateway_url, app_data_dir).await?;
+  if let Some(update) = await_gateway_ws_session_update_event(
+    None,
+    &mut socket,
+    &gateway_url,
+    MOBILE_GATEWAY_SESSION_KEY,
+    after_fingerprint,
+    Duration::from_millis(MOBILE_GATEWAY_SESSION_SUBSCRIBE_WAIT_MS),
+  )
+  .await?
+  {
+    return Ok(Some(update));
+  }
+  fetch_latest_gateway_session_update_from_history(
+    None,
+    &mut socket,
+    &gateway_url,
+    MOBILE_GATEWAY_SESSION_KEY,
+    after_fingerprint,
+  )
+  .await
+}
+
+async fn fetch_latest_gateway_session_update_from_history(
+  progress: Option<&QuestProgressReporter>,
+  socket: &mut GatewayWsStream,
+  gateway_url: &reqwest::Url,
+  session_key: &str,
+  after_fingerprint: Option<&str>,
+) -> Result<Option<QuestSessionUpdate>, String> {
   let history_request_id = next_gateway_request_id("chat-history");
   let history_params = serde_json::json!({
-    "sessionKey": MOBILE_GATEWAY_SESSION_KEY,
+    "sessionKey": session_key,
     "limit": MOBILE_GATEWAY_HISTORY_POLL_LIMIT,
   });
   send_gateway_ws_request(
-    None,
-    &mut socket,
+    progress,
+    socket,
     &history_request_id,
     "chat.history",
     history_params,
   )
   .await?;
 
-  let history_response = await_gateway_ws_response(None, &mut socket, &history_request_id).await?;
+  let history_response = await_gateway_ws_response(progress, socket, &history_request_id).await?;
   if !history_response.ok {
     return Err(format_gateway_ws_request_failure(
       "chat.history",
-      &gateway_url,
+      gateway_url,
       &history_response,
     ));
   }
@@ -1103,11 +1239,92 @@ async fn poll_remote_gateway_session_update_websocket(
   let normalized_after = after_fingerprint
     .map(str::trim)
     .filter(|value| !value.is_empty());
-  if normalized_after == Some(update.message_fingerprint.as_str()) {
+  if normalized_after == update.message_fingerprint.as_deref() {
     return Ok(None);
   }
 
   Ok(Some(update))
+}
+
+async fn await_gateway_ws_session_update_event(
+  progress: Option<&QuestProgressReporter>,
+  socket: &mut GatewayWsStream,
+  gateway_url: &reqwest::Url,
+  session_key: &str,
+  after_fingerprint: Option<&str>,
+  wait_for: Duration,
+) -> Result<Option<QuestSessionUpdate>, String> {
+  let subscribe_request_id = next_gateway_request_id("session-message-subscribe");
+  send_gateway_ws_request(
+    progress,
+    socket,
+    &subscribe_request_id,
+    "sessions.messages.subscribe",
+    serde_json::json!({
+      "key": session_key,
+    }),
+  )
+  .await?;
+
+  let subscribe_response = await_gateway_ws_response(progress, socket, &subscribe_request_id).await?;
+  if !subscribe_response.ok {
+    return Err(format_gateway_ws_request_failure(
+      "sessions.messages.subscribe",
+      gateway_url,
+      &subscribe_response,
+    ));
+  }
+
+  let normalized_after = after_fingerprint
+    .map(str::trim)
+    .filter(|value| !value.is_empty());
+  let deadline = Instant::now() + wait_for;
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+      return Ok(None);
+    }
+
+    let frame = match timeout(remaining, await_gateway_ws_json_frame(progress, socket)).await {
+      Ok(result) => result?,
+      Err(_) => return Ok(None),
+    };
+    if !matches!(
+      frame.get("type").and_then(|value| value.as_str()),
+      Some("event") | Some("evt")
+    ) {
+      continue;
+    }
+
+    if frame.get("event").and_then(|value| value.as_str()) != Some("session.message") {
+      continue;
+    }
+
+    let Some(payload) = frame.get("payload") else {
+      continue;
+    };
+    let payload_session_key = payload
+      .get("sessionKey")
+      .and_then(|value| value.as_str())
+      .map(str::trim)
+      .filter(|value| !value.is_empty());
+    if payload_session_key != Some(session_key) {
+      continue;
+    }
+
+    let Some(update) = extract_gateway_session_update_from_session_message_payload(payload) else {
+      continue;
+    };
+    if normalized_after == update.message_fingerprint.as_deref()
+      && update.summary.is_none()
+      && update.status.is_none()
+      && !update.waiting_for_approval
+    {
+      continue;
+    }
+
+    return Ok(Some(update));
+  }
 }
 
 async fn connect_remote_gateway_websocket_for_session(
@@ -1120,15 +1337,27 @@ async fn connect_remote_gateway_websocket_for_session(
     .as_ref()
     .map(|value| !value.trim().is_empty())
     .unwrap_or(false);
+  let prefer_device = should_prefer_device_for_chat_send(app_data_dir, gateway_url);
 
-  if has_shared_token {
+  if has_shared_token && !prefer_device {
     if let Ok(socket) = connect_authenticated_gateway_socket(None, resolved, gateway_url, None).await {
       return Ok(socket);
     }
   }
 
   let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
-  connect_authenticated_gateway_socket(None, resolved, gateway_url, Some(&device_identity)).await
+  match connect_authenticated_gateway_socket(None, resolved, gateway_url, Some(&device_identity)).await {
+    Ok(socket) => Ok(socket),
+    Err(device_error) => {
+      if has_shared_token && prefer_device {
+        connect_authenticated_gateway_socket(None, resolved, gateway_url, None)
+          .await
+          .map_err(|_| device_error)
+      } else {
+        Err(device_error)
+      }
+    }
+  }
 }
 
 async fn connect_authenticated_gateway_socket(
@@ -1171,8 +1400,42 @@ async fn send_prompt_via_remote_gateway_websocket(
   prompt: &str,
   app_data_dir: &Path,
 ) -> Result<QuestOutcome, String> {
-  progress.emit("remote-config");
-  progress.emit("gateway-direct");
+  send_gateway_chat_prompt_via_websocket(
+    Some(progress),
+    resolved,
+    prompt,
+    app_data_dir,
+    MOBILE_GATEWAY_SESSION_KEY,
+  )
+  .await
+}
+
+async fn send_hidden_manager_prompt_via_remote_gateway(
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  app_data_dir: &Path,
+) -> Result<QuestOutcome, String> {
+  send_gateway_chat_prompt_via_websocket(
+    None,
+    resolved,
+    prompt,
+    app_data_dir,
+    MOBILE_GATEWAY_MANAGER_SESSION_KEY,
+  )
+  .await
+}
+
+async fn send_gateway_chat_prompt_via_websocket(
+  progress: Option<&QuestProgressReporter>,
+  resolved: &ResolvedManagerConfig,
+  prompt: &str,
+  app_data_dir: &Path,
+  session_key: &str,
+) -> Result<QuestOutcome, String> {
+  if let Some(progress) = progress {
+    progress.emit("remote-config");
+    progress.emit("gateway-direct");
+  }
 
   let gateway_url = remote_gateway_websocket_url(resolved)?;
   let has_shared_token = resolved
@@ -1180,14 +1443,28 @@ async fn send_prompt_via_remote_gateway_websocket(
     .as_ref()
     .map(|value| !value.trim().is_empty())
     .unwrap_or(false);
+  let prefer_device = should_prefer_device_for_chat_send(app_data_dir, &gateway_url);
 
-  if has_shared_token {
-    match send_prompt_via_remote_gateway_websocket_attempt(progress, resolved, prompt, &gateway_url, None).await {
-      Ok(outcome) => return Ok(outcome),
+  if has_shared_token && !prefer_device {
+    match send_prompt_via_remote_gateway_websocket_attempt(
+      progress,
+      resolved,
+      prompt,
+      &gateway_url,
+      None,
+      session_key,
+    )
+    .await
+    {
+      Ok(outcome) => {
+        let _ = write_prefer_device_for_chat_send(app_data_dir, &gateway_url, false);
+        return Ok(outcome);
+      }
       Err(shared_token_error) => {
         if !is_gateway_ws_missing_operator_scope_error(&shared_token_error) {
           return Err(shared_token_error);
         }
+        let _ = write_prefer_device_for_chat_send(app_data_dir, &gateway_url, true);
 
         let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
         match send_prompt_via_remote_gateway_websocket_attempt(
@@ -1196,10 +1473,14 @@ async fn send_prompt_via_remote_gateway_websocket(
           prompt,
           &gateway_url,
           Some(&device_identity),
+          session_key,
         )
         .await
         {
-          Ok(outcome) => return Ok(outcome),
+          Ok(outcome) => {
+            let _ = write_prefer_device_for_chat_send(app_data_dir, &gateway_url, true);
+            return Ok(outcome);
+          }
           Err(device_error) => {
             if is_gateway_ws_pairing_required_error(&device_error) {
               return Err(format!(
@@ -1218,42 +1499,69 @@ async fn send_prompt_via_remote_gateway_websocket(
   }
 
   let device_identity = load_or_create_gateway_device_identity(app_data_dir)?;
-  send_prompt_via_remote_gateway_websocket_attempt(
+  let device_attempt = send_prompt_via_remote_gateway_websocket_attempt(
     progress,
     resolved,
     prompt,
     &gateway_url,
     Some(&device_identity),
+    session_key,
   )
-  .await
+  .await;
+  match device_attempt {
+    Ok(outcome) => {
+      let _ = write_prefer_device_for_chat_send(app_data_dir, &gateway_url, true);
+      Ok(outcome)
+    }
+    Err(device_error) => {
+      if has_shared_token && prefer_device {
+        match send_prompt_via_remote_gateway_websocket_attempt(
+          progress,
+          resolved,
+          prompt,
+          &gateway_url,
+          None,
+          session_key,
+        )
+        .await
+        {
+          Ok(outcome) => {
+            let _ = write_prefer_device_for_chat_send(app_data_dir, &gateway_url, false);
+            Ok(outcome)
+          }
+          Err(_) => Err(device_error),
+        }
+      } else {
+        Err(device_error)
+      }
+    }
+  }
 }
 
 async fn send_prompt_via_remote_gateway_websocket_attempt(
-  progress: &QuestProgressReporter,
+  progress: Option<&QuestProgressReporter>,
   resolved: &ResolvedManagerConfig,
   prompt: &str,
   gateway_url: &reqwest::Url,
   device_identity: Option<&GatewayDeviceIdentity>,
+  session_key: &str,
 ) -> Result<QuestOutcome, String> {
-  let mut socket = connect_authenticated_gateway_socket(
-    Some(progress),
-    resolved,
-    gateway_url,
-    device_identity,
-  )
-  .await?;
+  let mut socket =
+    connect_authenticated_gateway_socket(progress, resolved, gateway_url, device_identity).await?;
 
-  progress.emit("agent-working");
+  if let Some(progress) = progress {
+    progress.emit("agent-working");
+  }
   let run_id = next_gateway_request_id("run");
   let chat_send_request_id = next_gateway_request_id("chat-send");
   let chat_send_params = serde_json::json!({
-    "sessionKey": MOBILE_GATEWAY_SESSION_KEY,
+    "sessionKey": session_key,
     "message": prompt,
     "idempotencyKey": run_id,
     "timeoutMs": AGENT_MAX_RUNTIME_SECS * 1000,
   });
   send_gateway_ws_request(
-    Some(progress),
+    progress,
     &mut socket,
     &chat_send_request_id,
     "chat.send",
@@ -1261,7 +1569,7 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
   )
   .await?;
 
-  let chat_send_response = await_gateway_ws_response(Some(progress), &mut socket, &chat_send_request_id).await?;
+  let chat_send_response = await_gateway_ws_response(progress, &mut socket, &chat_send_request_id).await?;
   if !chat_send_response.ok {
     return Err(format_gateway_ws_request_failure(
       "chat.send",
@@ -1278,8 +1586,10 @@ async fn send_prompt_via_remote_gateway_websocket_attempt(
     .filter(|value| !value.trim().is_empty())
     .unwrap_or(run_id.as_str())
     .to_string();
-  let reply = await_gateway_ws_chat_reply(Some(progress), &mut socket, &expected_run_id).await?;
-  progress.emit("agent-output");
+  let reply = await_gateway_ws_chat_reply(progress, &mut socket, &expected_run_id).await?;
+  if let Some(progress) = progress {
+    progress.emit("agent-output");
+  }
   Ok(QuestOutcome {
     reply: reply.reply,
     message_fingerprint: Some(reply.message_fingerprint),
@@ -1540,6 +1850,326 @@ async fn build_manager_state(config: &ResolvedManagerConfig) -> Result<ManagerSt
       .collect(),
     installed: list_installed_skills(config).await?,
   })
+}
+
+async fn build_remote_gateway_manager_state(
+  config: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+) -> Result<ManagerState, String> {
+  let status = fetch_remote_gateway_skills_status(config, app_data_dir).await?;
+  let agent_name = fetch_remote_gateway_agent_name(config, app_data_dir)
+    .await
+    .ok()
+    .flatten()
+    .or_else(detect_default_agent_name);
+  let resolved_workdir = status
+    .workspace_dir
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .unwrap_or_else(|| config.workdir.display().to_string());
+  let resolved_skills_dir = status
+    .workspace_dir
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(|value| normalized_path(&PathBuf::from(value).join("skills")).display().to_string())
+    .unwrap_or_else(|| config.skills_dir.display().to_string());
+
+  Ok(ManagerState {
+    agent_name,
+    resolved_workdir,
+    resolved_skills_dir: resolved_skills_dir.clone(),
+    workspace_source: "Connected OpenClaw gateway".to_string(),
+    registry: config.registry.clone(),
+    skill_roots: build_remote_gateway_skill_roots(&status, &resolved_skills_dir),
+    openclaw_target: config.openclaw_target.as_ref().map(|item| OpenClawTarget {
+      path: item.path.display().to_string(),
+      label: item.label.clone(),
+      source: item.source.clone(),
+      kind: item.kind.clone(),
+      exists: item.exists,
+      selected: item.selected,
+    }),
+    openclaw_candidates: config
+      .openclaw_candidates
+      .iter()
+      .map(|item| OpenClawTarget {
+        path: item.path.display().to_string(),
+        label: item.label.clone(),
+        source: item.source.clone(),
+        kind: item.kind.clone(),
+        exists: item.exists,
+        selected: item.selected,
+      })
+      .collect(),
+    installed: map_remote_gateway_installed_skills(&status),
+  })
+}
+
+fn build_remote_gateway_skill_roots(
+  status: &GatewaySkillsStatusPayload,
+  resolved_skills_dir: &str,
+) -> Vec<SkillRoot> {
+  let mut roots = Vec::new();
+  let mut seen = BTreeSet::new();
+
+  if !resolved_skills_dir.trim().is_empty() && seen.insert(resolved_skills_dir.to_string()) {
+    roots.push(SkillRoot {
+      path: resolved_skills_dir.to_string(),
+      label: "Gateway workspace".to_string(),
+      selected: true,
+      exists: true,
+    });
+  }
+
+  if let Some(path) = status
+    .managed_skills_dir
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+  {
+    if seen.insert(path.to_string()) {
+      roots.push(SkillRoot {
+        path: path.to_string(),
+        label: "Gateway managed skills".to_string(),
+        selected: false,
+        exists: true,
+      });
+    }
+  }
+
+  roots
+}
+
+fn map_remote_gateway_installed_skills(status: &GatewaySkillsStatusPayload) -> Vec<InstalledSkill> {
+  let mut installed = status
+    .skills
+    .iter()
+    .filter(|skill| !skill.bundled && !skill.disabled && !skill.blocked_by_allowlist)
+    .filter_map(map_remote_gateway_skill)
+    .collect::<Vec<_>>();
+
+  installed.sort_by(|left, right| {
+    left
+      .slug
+      .cmp(&right.slug)
+      .then_with(|| left.path.cmp(&right.path))
+  });
+
+  installed
+}
+
+fn map_remote_gateway_skill(skill: &GatewaySkillStatusEntry) -> Option<InstalledSkill> {
+  let slug = gateway_skill_slug(skill)?;
+  let source = skill
+    .source
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .unwrap_or("gateway")
+    .to_string();
+  let path = skill
+    .base_dir
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .or_else(|| {
+      skill
+        .file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    })
+    .unwrap_or(slug.as_str())
+    .to_string();
+
+  let base_summary = skill
+    .description
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .or_else(|| {
+      skill
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{value} is installed on the connected OpenClaw gateway"))
+    })
+    .unwrap_or_else(|| {
+      format!(
+        "Loaded from the connected OpenClaw gateway ({})",
+        remote_gateway_source_label(source.as_str())
+      )
+    });
+  let summary = if skill.eligible {
+    base_summary
+  } else {
+    let missing = format_remote_gateway_missing_requirements(&skill.missing);
+    if missing.is_empty() {
+      format!("{base_summary}. This skill is installed on the gateway, but it still needs extra requirements before OpenClaw can use it.")
+    } else {
+      format!("{base_summary}. Missing requirements on the gateway host: {missing}.")
+    }
+  };
+
+  Some(InstalledSkill {
+    slug,
+    version: None,
+    installed_at: None,
+    path,
+    root_label: remote_gateway_root_label(source.as_str()),
+    registry: None,
+    source,
+    status: if skill.eligible {
+      "ready".to_string()
+    } else {
+      "missing".to_string()
+    },
+    security: unknown_security(summary, "installed"),
+  })
+}
+
+fn gateway_skill_slug(skill: &GatewaySkillStatusEntry) -> Option<String> {
+  if let Some(base_dir) = skill
+    .base_dir
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+  {
+    if let Some(name) = Path::new(base_dir).file_name().and_then(OsStr::to_str) {
+      let slug = name.trim();
+      if is_safe_slug(slug) {
+        return Some(slug.to_string());
+      }
+    }
+  }
+
+  if let Some(file_path) = skill
+    .file_path
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+  {
+    if let Some(name) = Path::new(file_path)
+      .parent()
+      .and_then(Path::file_name)
+      .and_then(OsStr::to_str)
+    {
+      let slug = name.trim();
+      if is_safe_slug(slug) {
+        return Some(slug.to_string());
+      }
+    }
+  }
+
+  skill
+    .skill_key
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| is_safe_slug(value))
+    .map(str::to_string)
+}
+
+fn remote_gateway_source_label(source: &str) -> &'static str {
+  match source {
+    "openclaw-workspace" => "workspace",
+    "openclaw-extra" => "extensions",
+    "openclaw-managed" => "managed skills",
+    _ => "gateway skills",
+  }
+}
+
+fn remote_gateway_root_label(source: &str) -> String {
+  match source {
+    "openclaw-workspace" => "Gateway workspace",
+    "openclaw-extra" => "Gateway extensions",
+    "openclaw-managed" => "Gateway managed skills",
+    _ => "Gateway skills",
+  }
+  .to_string()
+}
+
+fn format_remote_gateway_missing_requirements(missing: &GatewaySkillMissingRequirements) -> String {
+  let mut items = Vec::new();
+  items.extend(missing.bins.iter().map(|value| format!("bin `{value}`")));
+  items.extend(missing.any_bins.iter().map(|value| format!("one of `{value}`")));
+  items.extend(missing.env.iter().map(|value| format!("env `{value}`")));
+  items.extend(missing.config.iter().map(|value| format!("config `{value}`")));
+  items.extend(missing.os.iter().map(|value| format!("OS `{value}`")));
+  items.join(", ")
+}
+
+async fn fetch_remote_gateway_skills_status(
+  config: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+) -> Result<GatewaySkillsStatusPayload, String> {
+  let gateway_url = remote_gateway_websocket_url(config)?;
+  let mut socket = connect_remote_gateway_websocket_for_session(config, &gateway_url, app_data_dir).await?;
+  let request_id = next_gateway_request_id("skills-status");
+  send_gateway_ws_request(
+    None,
+    &mut socket,
+    &request_id,
+    "skills.status",
+    serde_json::json!({}),
+  )
+  .await?;
+
+  let response = await_gateway_ws_response(None, &mut socket, &request_id).await?;
+  if !response.ok {
+    return Err(format_gateway_ws_request_failure(
+      "skills.status",
+      &gateway_url,
+      &response,
+    ));
+  }
+
+  let payload = response
+    .payload
+    .ok_or_else(|| "The OpenClaw Gateway returned no skill status payload.".to_string())?;
+
+  serde_json::from_value::<GatewaySkillsStatusPayload>(payload)
+    .map_err(|error| format!("The OpenClaw Gateway returned unreadable skills data.\n\n{error}"))
+}
+
+async fn fetch_remote_gateway_agent_name(
+  config: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+) -> Result<Option<String>, String> {
+  let gateway_url = remote_gateway_websocket_url(config)?;
+  let mut socket = connect_remote_gateway_websocket_for_session(config, &gateway_url, app_data_dir).await?;
+  let request_id = next_gateway_request_id("agent-identity");
+  send_gateway_ws_request(
+    None,
+    &mut socket,
+    &request_id,
+    "agent.identity.get",
+    serde_json::json!({}),
+  )
+  .await?;
+
+  let response = await_gateway_ws_response(None, &mut socket, &request_id).await?;
+  if !response.ok {
+    return Err(format_gateway_ws_request_failure(
+      "agent.identity.get",
+      &gateway_url,
+      &response,
+    ));
+  }
+
+  let payload = response
+    .payload
+    .ok_or_else(|| "The OpenClaw Gateway returned no agent identity payload.".to_string())?;
+  let identity = serde_json::from_value::<GatewayAgentIdentityPayload>(payload)
+    .map_err(|error| format!("The OpenClaw Gateway returned unreadable agent identity data.\n\n{error}"))?;
+
+  Ok(
+    clean_string(identity.name.as_ref()).or_else(|| clean_string(identity.display_name.as_ref())),
+  )
 }
 
 fn resolve_manager_config(config: Option<ManagerConfig>) -> Result<ResolvedManagerConfig, String> {
@@ -3778,6 +4408,45 @@ fn should_use_direct_remote_gateway_transport() -> bool {
   cfg!(any(target_os = "android", target_os = "ios"))
 }
 
+fn should_use_remote_gateway_manager_transport(resolved: &ResolvedManagerConfig) -> bool {
+  should_use_direct_remote_gateway_transport() && resolved.connection_mode.as_str() == "remote"
+}
+
+async fn install_registry_skill_via_remote_gateway(
+  resolved: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+  slug: &str,
+  version: &str,
+) -> Result<InstallOutcome, String> {
+  let prompt = format!(
+    "Use the shell on this OpenClaw host to run exactly `openclaw skills install {slug} --version {version}` in the active workspace. Wait for the command to finish. If it succeeds or the skill is already present, reply exactly `CLAWQUEST_INSTALL_OK {slug}`. If it fails, reply exactly `CLAWQUEST_INSTALL_ERROR {slug}: <short reason>`. Do not ask follow-up questions."
+  );
+  let reply = send_hidden_manager_prompt_via_remote_gateway(resolved, &prompt, app_data_dir)
+    .await?
+    .reply;
+  let state = build_remote_gateway_manager_state(resolved, app_data_dir).await?;
+  if state.installed.iter().any(|item| item.slug == slug) {
+    return Ok(InstallOutcome {
+      state: Some(state),
+      notice: format!("Installed {slug} v{version} on the connected OpenClaw gateway."),
+      requires_confirmation: false,
+      confirmation_reason: None,
+    });
+  }
+
+  let normalized_reply = reply.trim();
+  if normalized_reply.is_empty() {
+    Err(format!(
+      "Claw Quest asked the connected OpenClaw gateway to install {slug}, but the skill still did not appear in the gateway skill list."
+    ))
+  } else {
+    Err(format!(
+      "Claw Quest asked the connected OpenClaw gateway to install {slug}, but the skill still did not appear in the gateway skill list.\n\nGateway reply:\n{}",
+      summarize_gateway_body(normalized_reply)
+    ))
+  }
+}
+
 fn remote_gateway_websocket_url(resolved: &ResolvedManagerConfig) -> Result<reqwest::Url, String> {
   let raw_gateway_url = resolved
     .gateway_url
@@ -3954,6 +4623,79 @@ fn is_gateway_ws_pairing_required_error(detail: &str) -> bool {
   normalized.contains("pairing approval")
     || normalized.contains("pairing required")
     || normalized.contains("needs pairing")
+}
+
+fn gateway_transport_hints_path(app_data_dir: &Path) -> PathBuf {
+  app_data_dir.join("gateway").join("transport-hints.json")
+}
+
+fn gateway_transport_hint_key(gateway_url: &reqwest::Url) -> String {
+  let mut normalized = gateway_url.clone();
+  normalized.set_fragment(None);
+  normalized.set_query(None);
+
+  let next_path = normalized.path().trim_end_matches('/').to_string();
+  if next_path.is_empty() {
+    normalized.set_path("/");
+  } else {
+    normalized.set_path(&next_path);
+  }
+
+  normalized.to_string()
+}
+
+fn read_gateway_transport_hints(app_data_dir: &Path) -> PersistedGatewayTransportHints {
+  let path = gateway_transport_hints_path(app_data_dir);
+
+  if let Ok(raw) = fs::read_to_string(path) {
+    if let Ok(parsed) = serde_json::from_str::<PersistedGatewayTransportHints>(&raw) {
+      if parsed.version == 1 {
+        return parsed;
+      }
+    }
+  }
+
+  PersistedGatewayTransportHints {
+    version: 1,
+    prefer_device_for_chat_send: BTreeSet::new(),
+  }
+}
+
+fn write_gateway_transport_hints(
+  app_data_dir: &Path,
+  hints: &PersistedGatewayTransportHints,
+) -> Result<(), String> {
+  let path = gateway_transport_hints_path(app_data_dir);
+
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+
+  let raw = serde_json::to_string_pretty(hints).map_err(|error| error.to_string())?;
+  fs::write(path, format!("{raw}\n")).map_err(|error| error.to_string())
+}
+
+fn should_prefer_device_for_chat_send(app_data_dir: &Path, gateway_url: &reqwest::Url) -> bool {
+  let hints = read_gateway_transport_hints(app_data_dir);
+  let key = gateway_transport_hint_key(gateway_url);
+  hints.prefer_device_for_chat_send.contains(key.as_str())
+}
+
+fn write_prefer_device_for_chat_send(
+  app_data_dir: &Path,
+  gateway_url: &reqwest::Url,
+  prefer_device: bool,
+) -> Result<(), String> {
+  let mut hints = read_gateway_transport_hints(app_data_dir);
+  let key = gateway_transport_hint_key(gateway_url);
+
+  if prefer_device {
+    hints.prefer_device_for_chat_send.insert(key);
+  } else {
+    hints.prefer_device_for_chat_send.remove(key.as_str());
+  }
+
+  write_gateway_transport_hints(app_data_dir, &hints)
 }
 
 fn load_or_create_gateway_device_identity(app_data_dir: &Path) -> Result<GatewayDeviceIdentity, String> {
@@ -4181,6 +4923,7 @@ async fn await_gateway_ws_chat_reply(
         let detail = payload
           .get("error")
           .and_then(|value| value.as_str())
+          .or_else(|| payload.get("errorMessage").and_then(|value| value.as_str()))
           .or_else(|| {
             payload
               .get("message")
@@ -4442,9 +5185,141 @@ fn extract_latest_gateway_session_update(payload: &serde_json::Value) -> Option<
     }
 
     Some(QuestSessionUpdate {
-      message_fingerprint: fingerprint_gateway_reply(&reply),
-      reply,
+      message_fingerprint: Some(fingerprint_gateway_reply(&reply)),
+      reply: Some(reply),
+      summary: None,
+      status: None,
+      runtime_ms: None,
+      display_name: None,
+      waiting_for_approval: false,
     })
+  })
+}
+
+fn extract_gateway_session_update_from_session_message_payload(
+  payload: &serde_json::Value,
+) -> Option<QuestSessionUpdate> {
+  let status = payload
+    .get("status")
+    .and_then(|value| value.as_str())
+    .and_then(clean_inline_string);
+  let runtime_ms = payload
+    .get("runtimeMs")
+    .and_then(|value| value.as_u64())
+    .or_else(|| payload.get("runtimeMs").and_then(|value| value.as_i64()).and_then(|value| u64::try_from(value).ok()));
+  let display_name = payload
+    .get("displayName")
+    .and_then(|value| value.as_str())
+    .and_then(clean_inline_string);
+  let message = payload.get("message");
+  let message_role = message
+    .and_then(|value| value.get("role"))
+    .and_then(|value| value.as_str())
+    .and_then(clean_inline_string)
+    .map(|value| value.to_ascii_lowercase());
+  let message_text = message.and_then(extract_gateway_session_message_text);
+
+  let reply = match message_role.as_deref() {
+    Some("assistant") => message_text
+      .as_ref()
+      .filter(|value| !is_gateway_no_reply_message(value))
+      .cloned(),
+    _ => None,
+  };
+  let summary = if reply.is_some() {
+    None
+  } else {
+    match message_role.as_deref() {
+      Some("user") => None,
+      _ => message_text
+        .as_ref()
+        .cloned()
+        .or_else(|| synthesize_gateway_session_activity_summary(status.as_deref(), display_name.as_deref())),
+    }
+  };
+
+  let waiting_for_approval = payload_contains_gateway_approval_hint(payload)
+    || summary
+      .as_deref()
+      .map(|value| value.to_ascii_lowercase().contains("approval"))
+      .unwrap_or(false)
+    || status
+      .as_deref()
+      .map(|value| value.to_ascii_lowercase().contains("approval"))
+      .unwrap_or(false);
+
+  if reply.is_none() && summary.is_none() && status.is_none() && runtime_ms.is_none() {
+    return None;
+  }
+
+  let message_fingerprint = reply.as_ref().map(|value| fingerprint_gateway_reply(value));
+  Some(QuestSessionUpdate {
+    reply,
+    message_fingerprint,
+    summary,
+    status,
+    runtime_ms,
+    display_name,
+    waiting_for_approval,
+  })
+}
+
+fn extract_gateway_session_message_text(message: &serde_json::Value) -> Option<String> {
+  message
+    .get("content")
+    .and_then(extract_gateway_message_content)
+    .or_else(|| {
+      message
+        .get("text")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+    })
+    .or_else(|| {
+      message
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+    })
+    .and_then(|value| clean_inline_string(&value))
+}
+
+fn synthesize_gateway_session_activity_summary(
+  status: Option<&str>,
+  display_name: Option<&str>,
+) -> Option<String> {
+  let actor = display_name.unwrap_or("The adventurer");
+  let normalized = status?.trim().to_ascii_lowercase();
+
+  match normalized.as_str() {
+    "running" | "active" | "working" | "busy" => Some(format!("{actor} is still working through this quest.")),
+    "queued" | "pending" => Some(format!("{actor} is waiting for the next step.")),
+    "approval-pending" | "approval_required" | "approval required" => {
+      Some("This quest is waiting for approval on the OpenClaw host.".to_string())
+    }
+    "blocked" => Some("This quest is blocked until the host clears the way.".to_string()),
+    _ => None,
+  }
+}
+
+fn payload_contains_gateway_approval_hint(payload: &serde_json::Value) -> bool {
+  let mut haystacks = Vec::new();
+  if let Some(status) = payload.get("status").and_then(|value| value.as_str()) {
+    haystacks.push(status.to_ascii_lowercase());
+  }
+  if let Some(message) = payload.get("message") {
+    if let Some(kind) = message.get("kind").and_then(|value| value.as_str()) {
+      haystacks.push(kind.to_ascii_lowercase());
+    }
+    if let Some(text) = extract_gateway_session_message_text(message) {
+      haystacks.push(text.to_ascii_lowercase());
+    }
+  }
+
+  haystacks.iter().any(|value| {
+    value.contains("approval")
+      || value.contains("approve")
+      || value.contains("permission")
+      || value.contains("host must allow")
   })
 }
 

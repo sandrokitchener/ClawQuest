@@ -639,6 +639,66 @@ textarea {
   background: #f8f1df;
 }
 
+.pixel-shell-mobile .skill-card-action {
+  width: 100%;
+}
+
+.pixel-shell-mobile .catalog-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pixel-shell-mobile .skill-card {
+  min-height: 0;
+}
+
+.pixel-shell-mobile .skill-card-banner {
+  min-height: 34px;
+  padding: 5px 7px;
+}
+
+.pixel-shell-mobile .skill-slot-chip {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+
+.pixel-shell-mobile .skill-card-body {
+  gap: 6px;
+  padding: 8px 7px;
+}
+
+.pixel-shell-mobile .skill-card-icon {
+  width: min(100%, 54px);
+  border-width: 2px;
+}
+
+.pixel-shell-mobile .skill-card-icon .pixel-svg {
+  width: 34px;
+  height: 34px;
+}
+
+.pixel-shell-mobile .skill-card-name {
+  font-size: 0.72rem;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.pixel-shell-mobile .skill-card-meta {
+  display: none;
+}
+
+.pixel-shell-mobile .skill-card-action {
+  min-width: 0;
+  min-height: 30px;
+  padding-inline: 8px;
+  font-size: 0.68rem;
+}
+
+.pixel-shell-mobile .skill-tooltip {
+  display: none;
+}
+
 .pixel-shell-mobile .quest-console {
   margin-top: 0;
   padding-top: 0;
@@ -1498,6 +1558,18 @@ textarea {
   flex-wrap: wrap;
 }
 
+.skill-card-foot {
+  width: 100%;
+  align-items: center;
+}
+
+.skill-card-action {
+  min-width: 108px;
+  min-height: 38px;
+  justify-content: center;
+  padding-inline: 12px;
+}
+
 .mini-chip {
   display: inline-flex;
   align-items: center;
@@ -2109,6 +2181,56 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.quest-activity-window {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 3px solid rgba(95, 58, 34, 0.18);
+  background: #e5edd7;
+  color: #39522a;
+}
+
+.quest-activity-window-warning {
+  background: #f1dfc2;
+  color: #6a4724;
+}
+
+.quest-activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.quest-activity-head > span:first-child {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.quest-activity-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.quest-activity-copy strong {
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.quest-activity-copy > span {
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.quest-activity-meta {
+  display: grid;
+  gap: 4px;
+  font-size: 0.78rem;
+  opacity: 0.82;
+}
+
 .mobile-prototype-note {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2629,6 +2751,16 @@ body.skill-dragging * {
   gap: 12px;
 }
 
+.mobile-setup-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mobile-setup-paths .pixel-button {
+  width: 100%;
+}
+
 .mobile-setup-copy h2 {
   margin: 0;
   font-family: var(--font-title);
@@ -2650,10 +2782,44 @@ body.skill-dragging * {
   color: #7a5a44;
 }
 
+.mobile-setup-helper-box {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 3px solid rgba(95, 58, 34, 0.22);
+  background: #efe4c3;
+  box-shadow: inset 0 0 0 2px rgba(255, 247, 224, 0.76);
+}
+
+.mobile-setup-helper-box strong {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5f422d;
+}
+
+.mobile-setup-helper-box span {
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
 .mobile-setup-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.mobile-setup-secondary-button {
+  width: 100%;
+}
+
+.mobile-setup-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .mobile-setup-error {
@@ -2815,7 +2981,8 @@ body.skill-dragging * {
 
   .search-row,
   .tool-actions,
-  .mobile-setup-actions {
+  .mobile-setup-actions,
+  .mobile-setup-paths {
     grid-template-columns: 1fr;
   }
 
@@ -2844,9 +3011,12 @@ body.skill-dragging * {
     top: 98px;
   }
 
-  .catalog-grid,
   .slot-card {
     grid-template-columns: 1fr;
+  }
+
+  .pixel-shell-mobile .catalog-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .slot-index {

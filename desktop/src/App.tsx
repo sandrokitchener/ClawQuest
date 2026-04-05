@@ -24,11 +24,13 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
   type DragEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+import questVoicePack from './data/quest-voice-pack.json'
 import {
   browseRegistrySkills,
   centerDesktopWindow,
@@ -58,6 +60,8 @@ import {
 
 type AgentClass = 'cleric' | 'ranger' | 'rogue' | 'paladin'
 type AgentRace = 'elf' | 'orc' | 'human' | 'halfling' | 'tiefling' | 'goblin'
+type QuestActivityCategory = 'internet' | 'writing' | 'research' | 'busywork' | 'combat'
+type QuestResponseType = 'completed' | 'needs_input' | 'blocked'
 type GearSlot = 'helm' | 'weapon' | 'shield' | 'core' | 'boots' | 'charm'
 type SkillRarity = 'junk' | 'common' | 'rare' | 'epic' | 'legendary'
 type DropZone = 'equip' | 'trash' | null
@@ -103,6 +107,21 @@ type DraftConfig = {
   dockerCommand: string
   dockerWorkdir: string
 }
+type MobileSetupMode = 'manual' | 'setup-code' | 'scan'
+type OpenClawSetupPayload = {
+  gatewayUrl: string
+  bootstrapToken: string
+}
+type BarcodeDetectorResult = {
+  rawValue?: string
+}
+type BarcodeDetectorOptions = {
+  formats?: string[]
+}
+type BarcodeDetectorInstance = {
+  detect(source: ImageBitmapSource): Promise<BarcodeDetectorResult[]>
+}
+type BarcodeDetectorConstructor = new (options?: BarcodeDetectorOptions) => BarcodeDetectorInstance
 
 type PixelFill = 'accent' | 'cloth' | 'metal' | 'outline' | 'shade' | 'skin' | 'trim'
 type PixelRect = readonly [number, number, number, number, PixelFill]
@@ -130,6 +149,25 @@ type QuestLogEntry = {
   title: string
   detail?: string
   timestamp: number
+}
+type MobileQuestActivity = {
+  prompt: string
+  startedAt: number
+  updatedAt: number
+  summary: string
+  statusLabel: string
+  runtimeMs?: number | null
+  waitingForApproval: boolean
+}
+type QuestVoicePack = {
+  schemaVersion: number
+  notes?: string[]
+  examples?: Record<string, string>
+  activityCategories: QuestActivityCategory[]
+  responseTypes: QuestResponseType[]
+  activityBubblesByCombo: Record<string, Record<QuestActivityCategory, string[]>>
+  returnBubblesByCombo: Record<string, Record<QuestResponseType, string[]>>
+  questReturnLeads: Record<QuestResponseType, string[]>
 }
 
 type DemoSkillSeed = {
@@ -159,19 +197,25 @@ const EMPTY_DRAFT: DraftConfig = {
 }
 
 const clawQuestWordmarkUrl = new URL('./assets/claw-quest-title.png', import.meta.url).href
-const BACKGROUND_MUSIC_URL = new URL('./assets/crpg-loop.wav', import.meta.url).href
-const BACKGROUND_MUSIC_VOLUME = 0.18
-const BACKGROUND_MUSIC_PLAYBACK_RATE = 0.92
+const MAIN_BACKGROUND_MUSIC_URL = new URL('./assets/crpg-loop.wav', import.meta.url).href
+const SHOP_BACKGROUND_MUSIC_URL = new URL('./assets/merchant-loop.wav', import.meta.url).href
+const MAIN_BACKGROUND_MUSIC_VOLUME = 0.18
+const SHOP_BACKGROUND_MUSIC_VOLUME = 0.16
+const MAIN_BACKGROUND_MUSIC_PLAYBACK_RATE = 1
+const SHOP_BACKGROUND_MUSIC_PLAYBACK_RATE = 1
+type BackgroundMusicKind = 'main' | 'shop'
 type PitchShiftableAudio = HTMLAudioElement & {
   mozPreservesPitch?: boolean
   preservesPitch?: boolean
   webkitPreservesPitch?: boolean
 }
 
-function tuneBackgroundMusic(audio: HTMLAudioElement, volume: number) {
+const QUEST_VOICE_PACK = questVoicePack as QuestVoicePack
+
+function tuneBackgroundMusic(audio: HTMLAudioElement, volume: number, playbackRate: number) {
   const tonalAudio = audio as PitchShiftableAudio
   tonalAudio.volume = volume
-  tonalAudio.playbackRate = BACKGROUND_MUSIC_PLAYBACK_RATE
+  tonalAudio.playbackRate = playbackRate
   tonalAudio.preservesPitch = false
   tonalAudio.mozPreservesPitch = false
   tonalAudio.webkitPreservesPitch = false
@@ -215,6 +259,7 @@ const QUEST_PROGRESS_STORAGE_KEY = 'claw-quest-adventurer-progress-v1'
 const CONNECTION_SETTINGS_STORAGE_KEY = 'claw-quest-connection-settings-v1'
 const AUDIO_MUTED_STORAGE_KEY = 'claw-quest-audio-muted-v1'
 const QUEST_LOG_VISIBLE_STORAGE_KEY = 'claw-quest-quest-log-visible-v1'
+const MOBILE_DEMO_MODE_STORAGE_KEY = 'claw-quest-mobile-demo-v1'
 const DRAG_TRANSFER_KEY = 'application/x-claw-quest-skill'
 const AVATAR_SPEAKING_MS = 2600
 const CATALOG_SEARCH_DEBOUNCE_MS = 420
@@ -225,6 +270,7 @@ const QUEST_BUBBLE_PROGRESS_MS = 10_400
 const QUEST_BUBBLE_ROTATION_GUARD_MS = 1800
 const QUEST_PROGRESS_EVENT_MIN_MS = 9000
 const MOBILE_QUEST_SESSION_POLL_MS = 1800
+const MOBILE_QUEST_SESSION_WATCH_MS = 10 * 60_000
 const MOBILE_SHELL_BREAKPOINT_PX = 860
 const MOBILE_PREVIEW_QUEST_DELAY_MS = 900
 const AGENT_RACE_OPTIONS: AgentRace[] = ['elf', 'orc', 'human', 'halfling', 'tiefling', 'goblin']
@@ -758,7 +804,7 @@ export default function App() {
   const runtime = isTauriRuntime()
   const [managerState, setManagerState] = useState<ManagerState | null>(null)
   const [demoInstalled, setDemoInstalled] = useState<InstalledSkill[]>(() =>
-    isFeatureDemoMode() ? buildFeatureDemoInstalledSkills() : [],
+    isFeatureDemoMode() || readMobileDemoMode() ? buildFeatureDemoInstalledSkills() : [],
   )
   const [catalog, setCatalog] = useState<RegistrySkill[]>([])
   const [draftConfig, setDraftConfig] = useState<DraftConfig>(() => mergeStoredConnectionSettings(EMPTY_DRAFT))
@@ -789,13 +835,20 @@ export default function App() {
   const [audioMuted, setAudioMuted] = useState(() => readAudioMuted())
   const [isMobileShell, setIsMobileShell] = useState(() => detectMobileShell())
   const [isDocked, setIsDocked] = useState(() => detectMobileShell())
+  const [mobileDemoMode, setMobileDemoMode] = useState(() => readMobileDemoMode())
   const [mobileShopOpen, setMobileShopOpen] = useState(false)
   const [desktopShopOpen, setDesktopShopOpen] = useState(false)
-  const [mobileSetupOpen, setMobileSetupOpen] = useState(() => !hasGatewayWizardConfig(mergeStoredConnectionSettings(EMPTY_DRAFT)))
+  const [mobileSetupOpen, setMobileSetupOpen] = useState(() => {
+    const initialDraft = mergeStoredConnectionSettings(EMPTY_DRAFT)
+    return !hasGatewayWizardConfig(initialDraft) && !readMobileDemoMode()
+  })
   const [mobileSetupStep, setMobileSetupStep] = useState(0)
+  const [mobileSetupMode, setMobileSetupMode] = useState<MobileSetupMode>('manual')
+  const [mobileSetupCode, setMobileSetupCode] = useState('')
   const [mobileSetupDismissed, setMobileSetupDismissed] = useState(false)
   const [mobileSetupError, setMobileSetupError] = useState('')
   const [mobileSetupWorking, setMobileSetupWorking] = useState(false)
+  const [mobileSetupScanning, setMobileSetupScanning] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [questDraft, setQuestDraft] = useState('')
   const [questBubble, setQuestBubble] = useState('Send me on a quest!')
@@ -805,6 +858,8 @@ export default function App() {
   const [questError, setQuestError] = useState('')
   const [questLogVisible, setQuestLogVisible] = useState(() => readQuestLogVisible())
   const [questLogEntries, setQuestLogEntries] = useState<QuestLogEntry[]>([])
+  const [mobileQuestActivity, setMobileQuestActivity] = useState<MobileQuestActivity | null>(null)
+  const [mobileQuestClock, setMobileQuestClock] = useState(() => Date.now())
   const [avatarSpeaking, setAvatarSpeaking] = useState(false)
   const didInitRef = useRef(false)
   const catalogRequestRef = useRef(0)
@@ -817,6 +872,7 @@ export default function App() {
   const questBubbleUpdatedAtRef = useRef(0)
   const questProgressContextRef = useRef<{
     agentClass: AgentClass
+    agentRace: AgentRace
     connectionMode: ConnectionMode
     prompt: string
     busy: boolean
@@ -824,6 +880,7 @@ export default function App() {
     mobileShell: boolean
   }>({
     agentClass: 'ranger',
+    agentRace: 'human',
     connectionMode: 'local',
     prompt: '',
     busy: false,
@@ -833,23 +890,34 @@ export default function App() {
   const questLogIdRef = useRef(0)
   const questProgressStagesSeenRef = useRef<Set<string>>(new Set())
   const mobileQuestLastFingerprintRef = useRef<string | null>(null)
+  const mobileQuestWatchUntilRef = useRef(0)
   const mobileQuestPollInFlightRef = useRef(false)
   const toolsPaneScrollFrameRef = useRef<number | null>(null)
   const shellViewportRef = useRef<HTMLElement | null>(null)
+  const mobileDemoModeRef = useRef(mobileDemoMode)
+  const demoInstalledRef = useRef(demoInstalled)
+  const mobileSetupFileInputRef = useRef<HTMLInputElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
-  const backgroundMusicRef = useRef<HTMLAudioElement | null>(null)
+  const backgroundMusicRefs = useRef<Record<BackgroundMusicKind, HTMLAudioElement | null>>({
+    main: null,
+    shop: null,
+  })
+  const activeBackgroundMusicKindRef = useRef<BackgroundMusicKind>('main')
   const audioMutedRef = useRef(audioMuted)
+  const shopVisibleRef = useRef(false)
 
   const state = managerState ?? EMPTY_STATE
-  const previewOnlyMode = !runtime || isMobileShell
   const activeConnectionMode = appliedConfig?.connectionMode ?? draftConfig.connectionMode
+  const previewOnlyMode = !runtime || (isMobileShell && (mobileDemoMode || activeConnectionMode !== 'remote'))
   const questPreviewOnlyMode = !runtime || (isMobileShell && activeConnectionMode !== 'remote')
   const appliedDraft = draftFromConfig(appliedConfig)
   const mobileGatewaySaved = hasGatewayWizardConfig(appliedDraft)
-  const mobileGatewayReady = mobileGatewaySaved
+  const mobileGatewayReady = mobileGatewaySaved && !mobileDemoMode
+  const mobileSetupSatisfied = mobileGatewaySaved || mobileDemoMode
   const liveMobileRemoteQuests = runtime && isMobileShell && activeConnectionMode === 'remote'
   const shopVisible = isMobileShell ? mobileShopOpen : desktopShopOpen
   const featureDemoMode = !runtime && !isMobileShell && isFeatureDemoMode()
+  const mobileQrSetupAvailable = isMobileShell && supportsMobileSetupQrScan()
   const installedSlugs = new Set(state.installed.map((skill) => skill.slug))
   const readySkills = state.installed.filter((skill) => skill.status === 'ready')
   const riskyCount = readySkills.filter((skill) => isRiskyStatus(skill.security.status)).length
@@ -955,6 +1023,20 @@ export default function App() {
   }, [audioMuted])
 
   useEffect(() => {
+    shopVisibleRef.current = shopVisible
+    syncBackgroundMusic()
+  }, [shopVisible])
+
+  useEffect(() => {
+    mobileDemoModeRef.current = mobileDemoMode
+    writeMobileDemoMode(mobileDemoMode)
+  }, [mobileDemoMode])
+
+  useEffect(() => {
+    demoInstalledRef.current = demoInstalled
+  }, [demoInstalled])
+
+  useEffect(() => {
     writeQuestLogVisible(questLogVisible)
   }, [questLogVisible])
 
@@ -1002,7 +1084,7 @@ export default function App() {
       return
     }
 
-    if (mobileGatewaySaved) {
+    if (mobileSetupSatisfied) {
       setMobileSetupDismissed(false)
       return
     }
@@ -1010,11 +1092,12 @@ export default function App() {
     if (!mobileSetupDismissed) {
       setMobileSetupOpen(true)
     }
-  }, [isMobileShell, mobileGatewaySaved, mobileSetupDismissed])
+  }, [isMobileShell, mobileSetupDismissed, mobileSetupSatisfied])
 
   useEffect(() => {
     questProgressContextRef.current = {
       agentClass: displayedAgentClass,
+      agentRace: displayedAgentRace,
       connectionMode: activeConnectionMode,
       prompt: activeQuestPrompt,
       busy: questBusy,
@@ -1026,6 +1109,7 @@ export default function App() {
     activeQuestPrompt,
     appliedConfig?.gatewayUrl,
     displayedAgentClass,
+    displayedAgentRace,
     draftConfig.gatewayUrl,
     isMobileShell,
     questBusy,
@@ -1073,6 +1157,7 @@ export default function App() {
         progressEvent,
         context.prompt,
         context.agentClass,
+        context.agentRace,
         context.connectionMode,
       )
       if (nextBubble && nextBubble !== questBubbleValueRef.current) {
@@ -1116,12 +1201,63 @@ export default function App() {
     setQuestLogEntries(entries.map((entry) => createQuestLogEntry(entry)))
   }
 
+  async function sendQuestCompleteNotification(reply: string) {
+    if (!runtime || !isMobileShell || document.visibilityState === 'visible') {
+      return
+    }
+
+    try {
+      const { isPermissionGranted, requestPermission, sendNotification } = await import(
+        '@tauri-apps/plugin-notification'
+      )
+      let granted = await isPermissionGranted()
+      if (!granted) {
+        granted = (await requestPermission()) === 'granted'
+      }
+      if (!granted) {
+        return
+      }
+
+      const body =
+        summarizeQuestTextForLog(reply, 140) || 'I have completed my quest and returned with news.'
+      await Promise.resolve(
+        sendNotification({
+          title: 'Quest complete',
+          body,
+        }),
+      )
+    } catch {
+      // Notification support is best-effort on mobile shells.
+    }
+  }
+
+  function handleMobileQuestActivityUpdate(update: QuestSessionUpdate) {
+    const nextSummary =
+      update.summary?.trim() ||
+      synthesizeMobileQuestActivitySummary(update.status, update.displayName || adventurerName, update.waitingForApproval)
+    if (!nextSummary) {
+      return
+    }
+
+    setMobileQuestActivity((current) => ({
+      prompt: current?.prompt || activeQuestPrompt.trim() || questDraft.trim() || 'Current quest',
+      startedAt: current?.startedAt ?? Date.now(),
+      updatedAt: Date.now(),
+      summary: nextSummary,
+      statusLabel: formatMobileQuestActivityStatus(update.status, update.waitingForApproval),
+      runtimeMs: update.runtimeMs ?? current?.runtimeMs ?? null,
+      waitingForApproval: Boolean(update.waitingForApproval),
+    }))
+  }
+
   function handleMobileQuestSessionUpdate(update: QuestSessionUpdate) {
-    const replyNotice = formatQuestReplyForNotice(update.reply, displayedAgentClass)
+    const replyNotice = formatQuestReplyForNotice(update.reply ?? '', displayedAgentClass, displayedAgentRace)
     setQuestError('')
     setQuestMood('returned')
-    setQuestBubble(returnedBubbleForClass(displayedAgentClass))
-    setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass))
+    setQuestBubble(returnedBubbleForReply(update.reply ?? '', displayedAgentClass, displayedAgentRace))
+    setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass, displayedAgentRace))
+    mobileQuestWatchUntilRef.current = 0
+    setMobileQuestActivity(null)
     triggerAvatarSpeaking()
     playUiSound('goodNews')
     appendQuestLogEntries([
@@ -1131,12 +1267,15 @@ export default function App() {
         detail: summarizeQuestTextForLog(replyNotice, 220),
       },
     ])
+    void sendQuestCompleteNotification(replyNotice)
   }
 
   useEffect(() => {
     if (!runtime || !isMobileShell || activeConnectionMode !== 'remote' || !appliedConfig?.gatewayUrl) {
       mobileQuestLastFingerprintRef.current = null
+      mobileQuestWatchUntilRef.current = 0
       mobileQuestPollInFlightRef.current = false
+      setMobileQuestActivity(null)
       return
     }
 
@@ -1147,7 +1286,14 @@ export default function App() {
         return
       }
 
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      const baselineFingerprint = mobileQuestLastFingerprintRef.current?.trim() || ''
+      if (!baselineFingerprint) {
+        return
+      }
+
+      if (Date.now() >= mobileQuestWatchUntilRef.current) {
+        mobileQuestWatchUntilRef.current = 0
+        setMobileQuestActivity(null)
         return
       }
 
@@ -1156,15 +1302,24 @@ export default function App() {
       try {
         const nextUpdate = await pollRemoteGatewaySessionUpdate(
           appliedConfig,
-          mobileQuestLastFingerprintRef.current,
+          baselineFingerprint,
         )
         if (cancelled || !nextUpdate) {
           return
         }
 
-        const hadBaseline = Boolean(mobileQuestLastFingerprintRef.current)
-        mobileQuestLastFingerprintRef.current = nextUpdate.messageFingerprint
-        if (!hadBaseline) {
+        const nextFingerprint = nextUpdate.messageFingerprint?.trim() || null
+        const previousFingerprint = mobileQuestLastFingerprintRef.current?.trim() || null
+        if (nextFingerprint) {
+          mobileQuestLastFingerprintRef.current = nextFingerprint
+        }
+        if (nextUpdate.summary || nextUpdate.status || nextUpdate.waitingForApproval) {
+          handleMobileQuestActivityUpdate(nextUpdate)
+        }
+        if (!nextUpdate.reply?.trim()) {
+          return
+        }
+        if (!previousFingerprint || nextFingerprint === previousFingerprint) {
           return
         }
 
@@ -1203,6 +1358,18 @@ export default function App() {
   ])
 
   useEffect(() => {
+    if (!mobileQuestActivity) {
+      return
+    }
+
+    setMobileQuestClock(Date.now())
+    const intervalId = window.setInterval(() => {
+      setMobileQuestClock(Date.now())
+    }, 1000)
+    return () => window.clearInterval(intervalId)
+  }, [mobileQuestActivity])
+
+  useEffect(() => {
     if (questBubbleIntervalRef.current !== null) {
       window.clearInterval(questBubbleIntervalRef.current)
       questBubbleIntervalRef.current = null
@@ -1212,7 +1379,12 @@ export default function App() {
       return
     }
 
-    const progressBubbles = buildQuestProgressBubbles(activeQuestPrompt, displayedAgentClass, activeConnectionMode)
+    const progressBubbles = buildQuestProgressBubbles(
+      activeQuestPrompt,
+      displayedAgentClass,
+      displayedAgentRace,
+      activeConnectionMode,
+    )
     if (progressBubbles.length <= 1) {
       return
     }
@@ -1239,7 +1411,7 @@ export default function App() {
         questBubbleIntervalRef.current = null
       }
     }
-  }, [activeConnectionMode, activeQuestPrompt, displayedAgentClass, questBusy])
+  }, [activeConnectionMode, activeQuestPrompt, displayedAgentClass, displayedAgentRace, questBusy])
 
   useEffect(() => {
     const loaded: Partial<Record<UiSound, HTMLAudioElement>> = {}
@@ -1263,11 +1435,20 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const audio = new Audio(BACKGROUND_MUSIC_URL)
-    audio.preload = 'auto'
-    audio.loop = true
-    tuneBackgroundMusic(audio, BACKGROUND_MUSIC_VOLUME)
-    backgroundMusicRef.current = audio
+    const mainAudio = new Audio(MAIN_BACKGROUND_MUSIC_URL)
+    mainAudio.preload = 'auto'
+    mainAudio.loop = true
+    tuneBackgroundMusic(mainAudio, MAIN_BACKGROUND_MUSIC_VOLUME, MAIN_BACKGROUND_MUSIC_PLAYBACK_RATE)
+
+    const shopAudio = new Audio(SHOP_BACKGROUND_MUSIC_URL)
+    shopAudio.preload = 'auto'
+    shopAudio.loop = true
+    tuneBackgroundMusic(shopAudio, SHOP_BACKGROUND_MUSIC_VOLUME, SHOP_BACKGROUND_MUSIC_PLAYBACK_RATE)
+
+    backgroundMusicRefs.current = {
+      main: mainAudio,
+      shop: shopAudio,
+    }
 
     const handleUserActivation = () => {
       if (audioMutedRef.current) {
@@ -1300,9 +1481,18 @@ export default function App() {
       window.removeEventListener('pointerdown', handleUserActivation)
       window.removeEventListener('keydown', handleUserActivation)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
-      audio.pause()
-      audio.src = ''
-      backgroundMusicRef.current = null
+      for (const audio of Object.values(backgroundMusicRefs.current)) {
+        if (!audio) {
+          continue
+        }
+
+        audio.pause()
+        audio.src = ''
+      }
+      backgroundMusicRefs.current = {
+        main: null,
+        shop: null,
+      }
     }
   }, [])
 
@@ -1398,17 +1588,59 @@ export default function App() {
   }
 
   function startBackgroundMusic() {
-    const audio = backgroundMusicRef.current
-    if (!audio || audioMutedRef.current || document.hidden || !audio.paused) {
+    if (audioMutedRef.current || document.hidden) {
       return
     }
 
-    tuneBackgroundMusic(audio, BACKGROUND_MUSIC_VOLUME)
-    void audio.play().catch(() => {})
+    syncBackgroundMusic()
   }
 
   function pauseBackgroundMusic() {
-    backgroundMusicRef.current?.pause()
+    for (const audio of Object.values(backgroundMusicRefs.current)) {
+      audio?.pause()
+    }
+  }
+
+  function syncBackgroundMusic() {
+    const nextKind: BackgroundMusicKind = shopVisibleRef.current ? 'shop' : 'main'
+    const nextAudio = backgroundMusicRefs.current[nextKind]
+    const otherAudio = backgroundMusicRefs.current[nextKind === 'main' ? 'shop' : 'main']
+    const kindChanged = activeBackgroundMusicKindRef.current !== nextKind
+    activeBackgroundMusicKindRef.current = nextKind
+
+    otherAudio?.pause()
+
+    if (!nextAudio) {
+      return
+    }
+
+    tuneBackgroundMusic(
+      nextAudio,
+      nextKind === 'shop' ? SHOP_BACKGROUND_MUSIC_VOLUME : MAIN_BACKGROUND_MUSIC_VOLUME,
+      nextKind === 'shop' ? SHOP_BACKGROUND_MUSIC_PLAYBACK_RATE : MAIN_BACKGROUND_MUSIC_PLAYBACK_RATE,
+    )
+
+    if (kindChanged) {
+      try {
+        nextAudio.currentTime = 0
+      } catch {
+        // Ignore seek failures and just start from the current position.
+      }
+    }
+
+    if (audioMutedRef.current || document.hidden) {
+      return
+    }
+
+    if (!nextAudio.paused && !kindChanged) {
+      return
+    }
+
+    if (!nextAudio.paused) {
+      nextAudio.pause()
+    }
+
+    void nextAudio.play().catch(() => {})
   }
 
   function queueShellScrollToTop() {
@@ -1468,7 +1700,8 @@ export default function App() {
 
     try {
       if (previewOnlyMode) {
-        const nextState = buildPreviewManagerState(nextConfig, featureDemoMode ? demoInstalled : [])
+        const previewInstalled = featureDemoMode || mobileDemoModeRef.current ? demoInstalledRef.current : []
+        const nextState = buildPreviewManagerState(nextConfig, previewInstalled)
         const nextDraft = mergeDraftWithState(nextState, nextConfig ? draftFromConfig(nextConfig) : draftConfig)
         setManagerState(nextState)
         setDraftConfig(nextDraft)
@@ -1538,9 +1771,9 @@ export default function App() {
     setLoadingCatalog(true)
 
     try {
-      if (!runtime) {
+      if (!runtime || (isMobileShell && mobileDemoModeRef.current)) {
         if (requestId === catalogRequestRef.current) {
-          setCatalog(featureDemoMode ? buildFeatureDemoCatalog(trimmedQuery, nextSort) : [])
+          setCatalog(featureDemoMode || mobileDemoModeRef.current ? buildFeatureDemoCatalog(trimmedQuery, nextSort) : [])
           setCatalogIssue('')
           setCatalogCooldownUntil(null)
           setError((current) => (parseCatalogRateLimit(current) ? '' : current))
@@ -1600,6 +1833,8 @@ export default function App() {
       const gatewayDraftIssue = validateGatewayDraftInput({
         gatewayUrl: nextConfig.gatewayUrl ?? draftConfig.gatewayUrl,
         gatewayToken: nextConfig.gatewayToken ?? draftConfig.gatewayToken,
+      }, {
+        allowInsecureToken: true,
       })
       if (gatewayDraftIssue) {
         setError(gatewayDraftIssue)
@@ -1718,9 +1953,10 @@ export default function App() {
     setHoveredGearSlot(null)
   }
 
-  function openMobileSetup(step = 0) {
+  function openMobileSetup(step = 0, mode: MobileSetupMode = 'manual') {
     setMobileSetupError('')
     setMobileSetupStep(step)
+    setMobileSetupMode(mode)
     setMobileSetupDismissed(false)
     setMobileSetupOpen(true)
     setMobileShopOpen(false)
@@ -1732,27 +1968,20 @@ export default function App() {
     setMobileSetupError('')
   }
 
-  async function handleCompleteMobileSetup() {
-    const gatewayDraftIssue = validateGatewayDraftInput(draftConfig)
-    if (gatewayDraftIssue) {
-      setMobileSetupError(gatewayDraftIssue)
-      setMobileSetupStep(1)
-      return
-    }
+  function handleSelectMobileSetupMode(mode: MobileSetupMode) {
+    setMobileSetupError('')
+    setMobileSetupMode(mode)
+    setMobileSetupStep(1)
+  }
 
-    const nextDraft = {
-      ...draftConfig,
-      connectionMode: 'remote' as const,
-    }
-
+  async function finalizeMobileGatewaySetup(nextDraft: DraftConfig, successMessage: string) {
     setMobileSetupWorking(true)
     setMobileSetupError('')
+    mobileDemoModeRef.current = false
+    setMobileDemoMode(false)
 
     try {
-      const { applied, errorMessage } = await applyDraft(
-        nextDraft,
-        'Gateway linked for the mobile shell.',
-      )
+      const { applied, errorMessage } = await applyDraft(nextDraft, successMessage)
       if (!applied) {
         setMobileSetupError(
           errorMessage ??
@@ -1762,15 +1991,162 @@ export default function App() {
               'link',
             ),
         )
-        return
+        return false
       }
 
       setMobileSetupOpen(false)
       setMobileSetupDismissed(false)
       setMobileSetupStep(0)
+      setMobileSetupMode('manual')
+      setMobileSetupCode('')
+      return true
     } finally {
       setMobileSetupWorking(false)
     }
+  }
+
+  async function handleImportMobileSetupCode(rawValue: string, successMessage: string) {
+    let payload: OpenClawSetupPayload
+    try {
+      payload = parseOpenClawSetupCode(rawValue)
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error && caughtError.message.trim()
+          ? caughtError.message.trim()
+          : 'That setup code could not be decoded.'
+      setMobileSetupError(message)
+      setMobileSetupMode('setup-code')
+      setMobileSetupStep(1)
+      return
+    }
+
+    const nextDraft: DraftConfig = {
+      ...draftConfig,
+      connectionMode: 'remote',
+      gatewayUrl: payload.gatewayUrl,
+      gatewayToken: payload.bootstrapToken,
+    }
+    const gatewayDraftIssue = validateGatewayDraftInput(nextDraft, {
+      allowInsecureToken: true,
+    })
+    if (gatewayDraftIssue) {
+      setMobileSetupError(gatewayDraftIssue)
+      setMobileSetupMode('setup-code')
+      setMobileSetupStep(1)
+      return
+    }
+
+    await finalizeMobileGatewaySetup(nextDraft, successMessage)
+  }
+
+  function handleOpenMobileSetupQrPicker() {
+    if (!supportsMobileSetupQrScan()) {
+      setMobileSetupError('This Android WebView cannot scan QR images directly yet. Paste the setup code instead.')
+      setMobileSetupMode('setup-code')
+      setMobileSetupStep(1)
+      return
+    }
+
+    setMobileSetupError('')
+    mobileSetupFileInputRef.current?.click()
+  }
+
+  async function handleMobileSetupQrFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) {
+      return
+    }
+
+    const BarcodeDetectorCtor = getBarcodeDetectorConstructor()
+    if (!BarcodeDetectorCtor || typeof createImageBitmap !== 'function') {
+      setMobileSetupError('This Android build cannot scan QR images directly yet. Paste the setup code instead.')
+      setMobileSetupMode('setup-code')
+      setMobileSetupStep(1)
+      return
+    }
+
+    setMobileSetupScanning(true)
+    setMobileSetupError('')
+
+    try {
+      const bitmap = await createImageBitmap(file)
+      try {
+        const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] })
+        const results = await detector.detect(bitmap)
+        const rawValue =
+          results.find((entry) => typeof entry.rawValue === 'string' && entry.rawValue.trim())?.rawValue ?? ''
+
+        if (!rawValue.trim()) {
+          throw new Error('No QR code was detected in that image. Try a sharper photo or paste the setup code instead.')
+        }
+
+        await handleImportMobileSetupCode(
+          rawValue,
+          'Gateway linked from the OpenClaw setup QR.',
+        )
+      } finally {
+        bitmap.close()
+      }
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error && caughtError.message.trim()
+          ? caughtError.message.trim()
+          : 'The QR image could not be read.'
+      setMobileSetupError(message)
+      setMobileSetupMode('scan')
+      setMobileSetupStep(1)
+    } finally {
+      setMobileSetupScanning(false)
+    }
+  }
+
+  function handleEnableMobileDemo() {
+    const seededDemoInstalled =
+      demoInstalledRef.current.length > 0 ? demoInstalledRef.current : buildFeatureDemoInstalledSkills()
+    demoInstalledRef.current = seededDemoInstalled
+    setDemoInstalled(seededDemoInstalled)
+
+    mobileDemoModeRef.current = true
+    setMobileDemoMode(true)
+
+    const nextDraft: DraftConfig = {
+      ...draftConfig,
+      connectionMode: 'local',
+    }
+    const nextState = buildPreviewManagerState(configFromDraft(nextDraft), seededDemoInstalled)
+    const mergedDraft = mergeDraftWithState(nextState, nextDraft)
+    setManagerState(nextState)
+    setDraftConfig(mergedDraft)
+    setAppliedConfig(configFromDraft(mergedDraft))
+    setError('')
+    setMobileSetupError('')
+    setMobileSetupOpen(false)
+    setMobileSetupDismissed(false)
+    setMobileSetupStep(0)
+    setMobileSetupMode('manual')
+    setMobileSetupCode('')
+    playUiSound('blip')
+    setNotice('Demo mode is ready. You can explore Claw Quest before linking a gateway.')
+  }
+
+  async function handleCompleteMobileSetup() {
+    const gatewayDraftIssue = validateGatewayDraftInput(draftConfig, {
+      allowInsecureToken: true,
+    })
+    if (gatewayDraftIssue) {
+      setMobileSetupError(gatewayDraftIssue)
+      setMobileSetupMode('manual')
+      setMobileSetupStep(1)
+      return
+    }
+
+    const nextDraft = {
+      ...draftConfig,
+      connectionMode: 'remote' as const,
+    }
+
+    await finalizeMobileGatewaySetup(nextDraft, 'Gateway linked for the mobile shell.')
   }
 
   function beginManualDrag(
@@ -1794,8 +2170,8 @@ export default function App() {
     updateManualHover(event.clientX, event.clientY, payload)
   }
 
-  async function handleQuestSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function handleQuestSubmit(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault()
     const prompt = questDraft.trim()
     const gatewayUrl = appliedConfig?.gatewayUrl ?? draftConfig.gatewayUrl
 
@@ -1808,7 +2184,9 @@ export default function App() {
     const nextAttemptLog = buildQuestAttemptLogEntries(prompt, activeConnectionMode, gatewayUrl)
 
     if (isMobileShell) {
-      const gatewayDraftIssue = validateGatewayDraftInput(draftConfig)
+      const gatewayDraftIssue = validateGatewayDraftInput(draftConfig, {
+        allowInsecureToken: true,
+      })
       if (gatewayDraftIssue) {
         resetQuestLog([
           ...nextAttemptLog,
@@ -1830,9 +2208,10 @@ export default function App() {
     setActiveQuestPrompt(prompt)
     setQuestError('')
     setQuestMood('busy')
-    setQuestBubble(questDepartureBubble(prompt, displayedAgentClass, activeConnectionMode))
+    setQuestBubble(questDepartureBubble(prompt, displayedAgentClass, displayedAgentRace, activeConnectionMode))
     questProgressContextRef.current = {
       agentClass: displayedAgentClass,
+      agentRace: displayedAgentRace,
       connectionMode: activeConnectionMode,
       prompt,
       busy: true,
@@ -1841,10 +2220,21 @@ export default function App() {
     }
     setAvatarSpeaking(false)
     playUiSound('questSend')
+    if (isMobileShell && activeConnectionMode === 'remote') {
+      setMobileQuestActivity({
+        prompt,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        summary: `${adventurerName} has accepted the quest and is heading for the gateway.`,
+        statusLabel: 'Quest underway',
+        runtimeMs: null,
+        waitingForApproval: false,
+      })
+    }
 
     try {
       if (questPreviewOnlyMode) {
-        if (runtime && isMobileShell) {
+        if (runtime && isMobileShell && !mobileDemoMode) {
           const previewOnlyMessage = formatMobileQuestPreviewOnlyMessage(activeConnectionMode, gatewayUrl)
           appendQuestLogEntries([
             {
@@ -1875,13 +2265,16 @@ export default function App() {
         const nextQuestCount = questsCompleted + 1
         const previousLevel = progress.level
         const nextProgress = deriveAdventurerProgress(nextQuestCount)
-        const replyNotice = isMobileShell
-          ? 'Gateway profile saved. Live mobile quest dispatch is the next forge step.'
-          : 'Quest preview only in browser mode.'
+        const replyNotice =
+          runtime && isMobileShell && mobileDemoMode
+            ? 'I walked the demo road and returned with a practice report from the guild hall.'
+            : isMobileShell
+              ? 'Gateway profile saved. Live mobile quest dispatch is the next forge step.'
+              : 'Quest preview only in browser mode.'
 
         setQuestsCompleted(nextQuestCount)
         writeQuestProgress(nextQuestCount)
-        setQuestBubble(returnedBubbleForClass(displayedAgentClass))
+        setQuestBubble(returnedBubbleForReply(replyNotice, displayedAgentClass, displayedAgentRace))
         setQuestMood('returned')
         setActiveQuestPrompt('')
         questProgressContextRef.current = {
@@ -1892,11 +2285,18 @@ export default function App() {
         triggerAvatarSpeaking()
         setQuestDraft('')
         playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-        setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass, nextProgress.level > previousLevel ? nextProgress.level : null))
+        setNotice(
+          formatQuestCompletionNotice(
+            replyNotice,
+            displayedAgentClass,
+            displayedAgentRace,
+            nextProgress.level > previousLevel ? nextProgress.level : null,
+          ),
+        )
         appendQuestLogEntries([
           {
             tone: 'clean',
-            title: 'Preview quest completed',
+            title: runtime && isMobileShell && mobileDemoMode ? 'Demo quest completed' : 'Preview quest completed',
             detail: replyNotice,
           },
         ])
@@ -1906,14 +2306,30 @@ export default function App() {
       const outcome = await sendOpenClawPrompt(appliedConfig, prompt)
       if (isMobileShell && activeConnectionMode === 'remote') {
         mobileQuestLastFingerprintRef.current = outcome.messageFingerprint?.trim() || null
+        mobileQuestWatchUntilRef.current = mobileQuestLastFingerprintRef.current
+          ? Date.now() + MOBILE_QUEST_SESSION_WATCH_MS
+          : 0
+        if (looksLikeQuestAcknowledgement(outcome.reply)) {
+          setMobileQuestActivity((current) => ({
+            prompt,
+            startedAt: current?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
+            summary: `Last word from ${adventurerName}: ${summarizeQuestTextForLog(outcome.reply, 160)}`,
+            statusLabel: 'Awaiting return',
+            runtimeMs: current?.runtimeMs ?? null,
+            waitingForApproval: false,
+          }))
+        } else {
+          setMobileQuestActivity(null)
+        }
       }
       const nextQuestCount = questsCompleted + 1
       const previousLevel = progress.level
       const nextProgress = deriveAdventurerProgress(nextQuestCount)
-      const replyNotice = formatQuestReplyForNotice(outcome.reply, displayedAgentClass)
+      const replyNotice = formatQuestReplyForNotice(outcome.reply, displayedAgentClass, displayedAgentRace)
       setQuestsCompleted(nextQuestCount)
       writeQuestProgress(nextQuestCount)
-      setQuestBubble(returnedBubbleForClass(displayedAgentClass))
+      setQuestBubble(returnedBubbleForReply(outcome.reply, displayedAgentClass, displayedAgentRace))
       setQuestMood('returned')
       setActiveQuestPrompt('')
       questProgressContextRef.current = {
@@ -1924,7 +2340,14 @@ export default function App() {
       triggerAvatarSpeaking()
       setQuestDraft('')
       playUiSound(nextProgress.level > previousLevel ? 'levelUp' : 'goodNews')
-      setNotice(formatQuestCompletionNotice(replyNotice, displayedAgentClass, nextProgress.level > previousLevel ? nextProgress.level : null))
+      setNotice(
+        formatQuestCompletionNotice(
+          replyNotice,
+          displayedAgentClass,
+          displayedAgentRace,
+          nextProgress.level > previousLevel ? nextProgress.level : null,
+        ),
+      )
       appendQuestLogEntries([
         {
           tone: 'clean',
@@ -1946,6 +2369,8 @@ export default function App() {
       setQuestBubble(formatQuestErrorBubble(nextError, prompt, displayedAgentClass))
       setQuestMood('error')
       setActiveQuestPrompt('')
+      mobileQuestWatchUntilRef.current = 0
+      setMobileQuestActivity(null)
       appendQuestLogEntries(
         buildQuestFailureLogEntries({
           rawError,
@@ -1989,7 +2414,7 @@ export default function App() {
     clearDragState()
 
     if (previewOnlyMode) {
-      if (featureDemoMode) {
+      if (featureDemoMode || mobileDemoModeRef.current) {
         if (demoInstalled.some((entry) => entry.slug === skill.slug)) {
           setNotice(`${skill.displayName} is already installed.`)
           return
@@ -2071,7 +2496,7 @@ export default function App() {
     clearDragState()
 
     if (previewOnlyMode) {
-      if (featureDemoMode) {
+      if (featureDemoMode || mobileDemoModeRef.current) {
         setRemovingPath(skill.path)
 
         try {
@@ -2307,31 +2732,60 @@ export default function App() {
     await handleRemove(payload.skill)
   }
 
+  const mobileQuestPanel =
+    isMobileShell && activeConnectionMode === 'remote' && mobileQuestActivity ? (
+      <div
+        className={`quest-activity-window ${mobileQuestActivity.waitingForApproval ? 'quest-activity-window-warning' : ''}`}
+        role="status"
+      >
+        <div className="quest-activity-head">
+          <span>Quest in progress</span>
+          <span className={`mini-chip ${mobileQuestActivity.waitingForApproval ? 'mini-chip-warning' : ''}`}>
+            {mobileQuestActivity.statusLabel}
+          </span>
+        </div>
+        <div className="quest-activity-copy">
+          <strong>{`${adventurerName} is on a quest.`}</strong>
+          <div className="quest-activity-meta">
+            <span>
+              Elapsed:{' '}
+              {formatMobileQuestElapsed(
+                mobileQuestActivity.startedAt,
+                mobileQuestActivity.runtimeMs,
+                mobileQuestClock,
+              )}
+            </span>
+          </div>
+        </div>
+      </div>
+    ) : null
+
   const questControls = (
     <div className="quest-controls">
-      <form className="quest-console" onSubmit={handleQuestSubmit}>
+      {mobileQuestPanel}
+
+      <div className="quest-console">
         <label className="quest-field">
           <span>Quest prompt</span>
           <textarea
             ref={questInputRef}
             disabled={questBusy}
             onChange={(event) => setQuestDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                event.currentTarget.form?.requestSubmit()
-              }
-            }}
             placeholder="Fix the build, scout the web, guard the repo..."
             value={questDraft}
-            rows={1}
+            rows={isMobileShell ? 3 : 2}
           />
         </label>
-        <button className="pixel-button pixel-button-primary" disabled={questBusy} type="submit">
+        <button
+          className="pixel-button pixel-button-primary"
+          disabled={questBusy}
+          onClick={() => void handleQuestSubmit()}
+          type="button"
+        >
           {questBusy ? <LoaderCircle className="spin" size={16} /> : <MessageCircle size={16} />}
           {questBusy ? 'Sending' : isMobileShell ? (liveMobileRemoteQuests ? 'Quest' : 'Preview Quest') : 'Quest'}
         </button>
-      </form>
+      </div>
 
       {questError ? (
         <div className="quest-error">
@@ -2587,11 +3041,20 @@ export default function App() {
                   return (
                     <article
                       className={`skill-card skill-card-rarity-${rarity.tier} ${installed ? 'skill-card-installed' : ''}`}
-                      draggable={false}
+                      draggable={!isMobileShell && !installed}
                       key={skill.slug}
-                      onPointerDown={(event) => !installed && beginManualDrag(event, { kind: 'catalog', skill })}
-                      onDragEnd={handleDragEnd}
-                      onDragStart={(event) => handleCatalogDragStart(event, skill)}
+                      onDoubleClick={() => {
+                        if (isMobileShell && !installed && !isWorking) {
+                          void handleInstall(skill, slot)
+                        }
+                      }}
+                      onPointerDown={(event) => {
+                        if (!isMobileShell && !installed) {
+                          beginManualDrag(event, { kind: 'catalog', skill })
+                        }
+                      }}
+                      onDragEnd={isMobileShell ? undefined : handleDragEnd}
+                      onDragStart={isMobileShell ? undefined : (event) => handleCatalogDragStart(event, skill)}
                     >
                       <div className="skill-card-banner">
                         <span className="skill-slot-chip" title={SLOT_LABELS[slot]}>
@@ -2608,16 +3071,31 @@ export default function App() {
                         <strong className="skill-card-name">{skill.displayName}</strong>
 
                         <div className="skill-card-foot">
-                          <div className="skill-card-meta">
-                            <span className={`mini-chip rarity-chip rarity-chip-${rarity.tier}`}>{rarity.label}</span>
-                            {skill.version ? <span className="mini-chip">v{skill.version}</span> : null}
-                            {isWorking ? (
-                              <span className="mini-chip">
-                                <LoaderCircle className="spin" size={14} />
-                                Equipping
-                              </span>
-                            ) : null}
-                          </div>
+                          {!isMobileShell ? (
+                            <div className="skill-card-meta">
+                              <span className={`mini-chip rarity-chip rarity-chip-${rarity.tier}`}>{rarity.label}</span>
+                              {skill.version ? <span className="mini-chip">v{skill.version}</span> : null}
+                              {isWorking ? (
+                                <span className="mini-chip">
+                                  <LoaderCircle className="spin" size={14} />
+                                  Equipping
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {isMobileShell ? (
+                            <button
+                              className="pixel-button skill-card-action"
+                              disabled={installed || isWorking || busy}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void handleInstall(skill, slot)
+                              }}
+                              type="button"
+                            >
+                              {installed ? 'In Loadout' : isWorking ? 'Equipping' : 'Equip'}
+                            </button>
+                          ) : null}
                         </div>
                       </div>
 
@@ -2737,8 +3215,8 @@ export default function App() {
 	                      <strong>{mobileGatewayReady ? 'Gateway linked' : 'Gateway setup pending'}</strong>
 	                      <span>
 	                        {liveMobileRemoteQuests
-	                          ? 'Mobile quests now use the linked gateway. Loadout and shop state are still preview-backed on the phone.'
-	                          : 'Browse the guild ledger below. The loadout stays empty until OpenClaw is actually connected.'}
+	                          ? 'Mobile quests and loadout now come from the linked OpenClaw gateway. Tap Equip in the shop to add skills from the phone.'
+	                          : 'Browse the guild ledger below. Link a live OpenClaw gateway to pull in your real loadout.'}
 	                      </span>
                     </div>
                   </div>
@@ -2771,11 +3249,15 @@ export default function App() {
                     return (
 	                      <article
 	                        className={`slot-card slot-card-${tone}`}
-	                        draggable={false}
+	                        draggable={!isMobileShell && !removing}
 	                        key={skill.path}
-	                        onPointerDown={(event) => !removing && beginManualDrag(event, { kind: 'installed', skill })}
-	                        onDragEnd={handleDragEnd}
-	                        onDragStart={(event) => handleInstalledDragStart(event, skill)}
+	                        onPointerDown={(event) => {
+                            if (!isMobileShell && !removing) {
+                              beginManualDrag(event, { kind: 'installed', skill })
+                            }
+                          }}
+	                        onDragEnd={isMobileShell ? undefined : handleDragEnd}
+	                        onDragStart={isMobileShell ? undefined : (event) => handleInstalledDragStart(event, skill)}
 	                      >
                         <div
                           className="slot-index"
@@ -3112,9 +3594,9 @@ export default function App() {
               <Search size={16} />
               {mobileShopOpen ? 'Hide Shop' : 'Skill Shop'}
             </button>
-            <button className="pixel-button mobile-dock-button" onClick={() => openMobileSetup(mobileGatewayReady ? 1 : 0)} type="button">
+            <button className="pixel-button mobile-dock-button" onClick={() => openMobileSetup(mobileGatewayReady ? 1 : 0, 'manual')} type="button">
               <Globe size={16} />
-              {mobileGatewayReady ? 'Gateway' : 'Link Gate'}
+              {mobileGatewayReady ? 'Gateway' : mobileDemoMode ? 'Setup' : 'Link Gate'}
             </button>
             <button className="pixel-button mobile-dock-button" disabled={busy} onClick={() => void handleRefresh()} type="button">
               <RefreshCw size={16} />
@@ -3135,14 +3617,57 @@ export default function App() {
             {mobileSetupStep === 0 ? (
               <div className="mobile-setup-copy">
                 <span className="mobile-setup-kicker">Setup Wizard</span>
-                <h2>Link your online OpenClaw Gateway</h2>
+                <h2>Connect Claw Quest the easy way</h2>
                 <p>
-                  This mobile build opens on its own. Add your gateway details here if you want live remote quests,
-                  but the phone only contacts that gateway when you actually send one.
+                  Install the <code>clawquest-connect</code> skill on the desktop OpenClaw host you want this phone
+                  to talk to, then ask OpenClaw:
+                  {' '}
+                  <strong>I want to connect ClawQuest</strong>.
                 </p>
+                <p>
+                  That skill should show the official OpenClaw QR and setup code for the gateway. You can scan the QR,
+                  paste the setup code, or fall back to manual gateway details here.
+                </p>
+
+                {mobileDemoMode ? (
+                  <div className="mobile-setup-helper-box">
+                    <strong>Demo mode is active right now.</strong>
+                    <span>Quests stay local to this phone until you switch back to a real OpenClaw gateway.</span>
+                  </div>
+                ) : null}
+
+                <div className="mobile-setup-paths">
+                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('scan')} type="button">
+                    <Search size={16} />
+                    Scan QR
+                  </button>
+                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('setup-code')} type="button">
+                    <Code2 size={16} />
+                    Paste Setup Code
+                  </button>
+                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('manual')} type="button">
+                    <Globe size={16} />
+                    Manual Setup
+                  </button>
+                  <button className="pixel-button" onClick={handleEnableMobileDemo} type="button">
+                    <MessageCircle size={16} />
+                    Try Demo
+                  </button>
+                </div>
+
+                {!mobileQrSetupAvailable ? (
+                  <p className="tool-note">
+                    This Android build cannot scan QR images directly yet, but pasted OpenClaw setup codes still work.
+                  </p>
+                ) : null}
+
                 <div className="mobile-setup-actions">
-                  <button className="pixel-button pixel-button-primary" onClick={() => setMobileSetupStep(1)} type="button">
-                    Continue
+                  <button
+                    className="pixel-button pixel-button-primary"
+                    onClick={() => handleSelectMobileSetupMode(mobileQrSetupAvailable ? 'scan' : 'setup-code')}
+                    type="button"
+                  >
+                    Start Setup
                   </button>
                   <button className="pixel-button" onClick={handleDismissMobileSetup} type="button">
                     Skip for now
@@ -3151,56 +3676,122 @@ export default function App() {
               </div>
             ) : (
               <div className="mobile-setup-copy">
-                <span className="mobile-setup-kicker">Gateway Link</span>
-                <h2>Where should this build phone home?</h2>
+                <span className="mobile-setup-kicker">
+                  {mobileSetupMode === 'scan'
+                    ? 'Scan QR'
+                    : mobileSetupMode === 'setup-code'
+                      ? 'Setup Code'
+                      : 'Gateway Link'}
+                </span>
+                <h2>
+                  {mobileSetupMode === 'scan'
+                    ? 'Scan the OpenClaw setup QR'
+                    : mobileSetupMode === 'setup-code'
+                      ? 'Paste the official OpenClaw setup code'
+                      : 'Where should this build phone home?'}
+                </h2>
 
-                <label className="pixel-field">
-                  <span>Gateway URL</span>
-                  <input
-                    onChange={(event) =>
-                      {
-                        setMobileSetupError('')
-                        setDraftConfig((current) => ({
-                          ...current,
-                          connectionMode: 'remote',
-                          gatewayUrl: event.target.value,
-                        }))
-                      }
-                    }
-                    placeholder="wss://your-gateway.example.com"
-                    type="text"
-                    value={draftConfig.gatewayUrl}
-                  />
-                </label>
+                {mobileSetupMode === 'scan' ? (
+                  <>
+                    <p>
+                      On your desktop OpenClaw host, install the <code>clawquest-connect</code> skill and tell
+                      OpenClaw:
+                      {' '}
+                      <strong>I want to connect ClawQuest</strong>.
+                    </p>
+                    <p>
+                      Then tap below to open your camera or photo picker and point it at the official OpenClaw QR.
+                    </p>
+                    <input
+                      accept="image/*"
+                      capture="environment"
+                      className="mobile-setup-file-input"
+                      onChange={(event) => void handleMobileSetupQrFileChange(event)}
+                      ref={mobileSetupFileInputRef}
+                      type="file"
+                    />
+                    <div className="mobile-setup-helper-box">
+                      <strong>What gets imported</strong>
+                      <span>The QR carries the gateway URL and a short-lived OpenClaw bootstrap token for pairing.</span>
+                    </div>
+                  </>
+                ) : null}
 
-                <label className="pixel-field">
-                  <span>Gateway token</span>
-                  <input
-                    onChange={(event) =>
-                      {
-                        setMobileSetupError('')
-                        setDraftConfig((current) => ({
-                          ...current,
-                          connectionMode: 'remote',
-                          gatewayToken: event.target.value,
-                        }))
-                      }
-                    }
-                    placeholder="Optional token"
-                    type="password"
-                    value={draftConfig.gatewayToken}
-                  />
-                </label>
+                {mobileSetupMode === 'setup-code' ? (
+                  <>
+                    <p>
+                      Paste the setup code that OpenClaw generated with the official <code>openclaw qr</code> flow.
+                    </p>
+                    <label className="pixel-field">
+                      <span>Setup code</span>
+                      <input
+                        onChange={(event) => {
+                          setMobileSetupError('')
+                          setMobileSetupCode(event.target.value)
+                        }}
+                        placeholder="Paste the OpenClaw setup code"
+                        type="text"
+                        value={mobileSetupCode}
+                      />
+                    </label>
+                    <p className="tool-note">
+                      The setup code already contains the gateway URL and a short-lived bootstrap token, so you do not
+                      need to type them by hand.
+                    </p>
+                  </>
+                ) : null}
 
-                <p className="tool-note">
-                  This APK saves the gateway profile on this phone, including the token, and only contacts that
-                  gateway when you launch a remote quest.
-                </p>
+                {mobileSetupMode === 'manual' ? (
+                  <>
+                    <label className="pixel-field">
+                      <span>Gateway URL</span>
+                      <input
+                        onChange={(event) =>
+                          {
+                            setMobileSetupError('')
+                            setDraftConfig((current) => ({
+                              ...current,
+                              connectionMode: 'remote',
+                              gatewayUrl: event.target.value,
+                            }))
+                          }
+                        }
+                        placeholder="wss://your-gateway.example.com"
+                        type="text"
+                        value={draftConfig.gatewayUrl}
+                      />
+                    </label>
 
-                <p className="tool-note">
-                  Install the Claw Quest Android gateway helper skill on the desktop OpenClaw host you want this phone
-                  to talk to. See the README for the current publish and install path.
-                </p>
+                    <label className="pixel-field">
+                      <span>Gateway token</span>
+                      <input
+                        onChange={(event) =>
+                          {
+                            setMobileSetupError('')
+                            setDraftConfig((current) => ({
+                              ...current,
+                              connectionMode: 'remote',
+                              gatewayToken: event.target.value,
+                            }))
+                          }
+                        }
+                        placeholder="Optional token"
+                        type="password"
+                        value={draftConfig.gatewayToken}
+                      />
+                    </label>
+
+                    <p className="tool-note">
+                      This phone saves the gateway profile locally, including the current token, and only contacts
+                      that gateway when you actually launch a remote quest.
+                    </p>
+
+                    <p className="tool-note">
+                      The smooth path is still the <code>clawquest-connect</code> skill plus the official OpenClaw
+                      setup QR or setup code.
+                    </p>
+                  </>
+                ) : null}
 
                 {mobileSetupError ? (
                   <div className="quest-error mobile-setup-error">
@@ -3213,16 +3804,57 @@ export default function App() {
                   <button className="pixel-button" onClick={() => setMobileSetupStep(0)} type="button">
                     Back
                   </button>
-                  <button
-                    className="pixel-button pixel-button-primary"
-                    disabled={mobileSetupWorking}
-                    onClick={() => void handleCompleteMobileSetup()}
-                    type="button"
-                  >
-                    {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Globe size={16} />}
-                    {mobileSetupWorking ? 'Linking' : 'Link Gateway'}
-                  </button>
+                  {mobileSetupMode === 'scan' ? (
+                    <button
+                      className="pixel-button pixel-button-primary"
+                      disabled={mobileSetupScanning || mobileSetupWorking || !mobileQrSetupAvailable}
+                      onClick={handleOpenMobileSetupQrPicker}
+                      type="button"
+                    >
+                      {mobileSetupScanning || mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
+                      {mobileSetupScanning ? 'Scanning' : 'Open Camera'}
+                    </button>
+                  ) : null}
+                  {mobileSetupMode === 'setup-code' ? (
+                    <button
+                      className="pixel-button pixel-button-primary"
+                      disabled={mobileSetupWorking}
+                      onClick={() => void handleImportMobileSetupCode(
+                        mobileSetupCode,
+                        'Gateway linked from the OpenClaw setup code.',
+                      )}
+                      type="button"
+                    >
+                      {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Code2 size={16} />}
+                      {mobileSetupWorking ? 'Importing' : 'Import Setup'}
+                    </button>
+                  ) : null}
+                  {mobileSetupMode === 'manual' ? (
+                    <button
+                      className="pixel-button pixel-button-primary"
+                      disabled={mobileSetupWorking}
+                      onClick={() => void handleCompleteMobileSetup()}
+                      type="button"
+                    >
+                      {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Globe size={16} />}
+                      {mobileSetupWorking ? 'Linking' : 'Link Gateway'}
+                    </button>
+                  ) : null}
                 </div>
+
+                {mobileSetupMode !== 'setup-code' ? (
+                  <button className="pixel-button mobile-setup-secondary-button" onClick={() => handleSelectMobileSetupMode('setup-code')} type="button">
+                    <Code2 size={16} />
+                    Paste Setup Code Instead
+                  </button>
+                ) : null}
+
+                {mobileSetupMode !== 'manual' ? (
+                  <button className="pixel-button mobile-setup-secondary-button" onClick={() => handleSelectMobileSetupMode('manual')} type="button">
+                    <Globe size={16} />
+                    Use Manual Fields Instead
+                  </button>
+                ) : null}
               </div>
             )}
           </section>
@@ -3813,6 +4445,143 @@ function writeStoredConnectionSettings(draft: DraftConfig) {
   )
 }
 
+function getBarcodeDetectorConstructor(): BarcodeDetectorConstructor | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const barcodeWindow = window as Window & {
+    BarcodeDetector?: BarcodeDetectorConstructor
+  }
+  return barcodeWindow.BarcodeDetector ?? null
+}
+
+function supportsMobileSetupQrScan() {
+  return getBarcodeDetectorConstructor() !== null && typeof createImageBitmap === 'function'
+}
+
+function decodeBase64UrlUtf8(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+  const binary = window.atob(`${normalized}${padding}`)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+function tryDecodeOpenClawSetupCode(candidate: string): OpenClawSetupPayload | null {
+  const trimmed = candidate.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const decoded = decodeBase64UrlUtf8(trimmed)
+    const parsed = JSON.parse(decoded) as {
+      bootstrapToken?: unknown
+      gatewayUrl?: unknown
+      url?: unknown
+    }
+    const gatewayUrl =
+      typeof parsed.url === 'string'
+        ? parsed.url.trim()
+        : typeof parsed.gatewayUrl === 'string'
+          ? parsed.gatewayUrl.trim()
+          : ''
+    const bootstrapToken = typeof parsed.bootstrapToken === 'string' ? parsed.bootstrapToken.trim() : ''
+    if (!gatewayUrl || !bootstrapToken) {
+      return null
+    }
+
+    const parsedGatewayUrl = new URL(gatewayUrl)
+    if (!['ws:', 'wss:', 'http:', 'https:'].includes(parsedGatewayUrl.protocol)) {
+      return null
+    }
+
+    return {
+      gatewayUrl: parsedGatewayUrl.toString(),
+      bootstrapToken,
+    }
+  } catch {
+    return null
+  }
+}
+
+function extractOpenClawSetupCode(rawValue: string) {
+  const trimmed = rawValue.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const direct = tryDecodeOpenClawSetupCode(trimmed)
+  if (direct) {
+    return {
+      code: trimmed,
+      payload: direct,
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      setupCode?: unknown
+    }
+    if (typeof parsed.setupCode === 'string' && parsed.setupCode.trim()) {
+      const nested = tryDecodeOpenClawSetupCode(parsed.setupCode)
+      if (nested) {
+        return {
+          code: parsed.setupCode.trim(),
+          payload: nested,
+        }
+      }
+    }
+  } catch {
+    // Ignore non-JSON setup-code input.
+  }
+
+  try {
+    const parsedUrl = new URL(trimmed)
+    for (const key of ['setupCode', 'code']) {
+      const value = parsedUrl.searchParams.get(key)
+      if (!value) {
+        continue
+      }
+
+      const nested = tryDecodeOpenClawSetupCode(value)
+      if (nested) {
+        return {
+          code: value.trim(),
+          payload: nested,
+        }
+      }
+    }
+  } catch {
+    // Ignore plain-text values that are not URLs.
+  }
+
+  const candidates = trimmed.match(/[A-Za-z0-9_-]{24,}/g) ?? []
+  for (const candidate of candidates) {
+    const nested = tryDecodeOpenClawSetupCode(candidate)
+    if (nested) {
+      return {
+        code: candidate.trim(),
+        payload: nested,
+      }
+    }
+  }
+
+  return null
+}
+
+function parseOpenClawSetupCode(rawValue: string): OpenClawSetupPayload {
+  const parsed = extractOpenClawSetupCode(rawValue)
+  if (!parsed) {
+    throw new Error(
+      'That does not look like a valid OpenClaw setup code. Ask OpenClaw to run `openclaw qr` and paste the setup code it prints.',
+    )
+  }
+
+  return parsed.payload
+}
+
 function isFeatureDemoMode() {
   if (typeof window === 'undefined') {
     return false
@@ -4355,6 +5124,26 @@ function writeAudioMuted(muted: boolean) {
   }
 }
 
+function readMobileDemoMode() {
+  try {
+    return window.localStorage.getItem(MOBILE_DEMO_MODE_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeMobileDemoMode(enabled: boolean) {
+  try {
+    if (enabled) {
+      window.localStorage.setItem(MOBILE_DEMO_MODE_STORAGE_KEY, '1')
+    } else {
+      window.localStorage.removeItem(MOBILE_DEMO_MODE_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore storage write issues in restricted environments.
+  }
+}
+
 function readQuestLogVisible() {
   try {
     return window.localStorage.getItem(QUEST_LOG_VISIBLE_STORAGE_KEY) === '1'
@@ -4457,18 +5246,23 @@ function formatReasonCode(code: string) {
     .replace(/\b\w/g, (value) => value.toUpperCase())
 }
 
-function formatQuestReplyForNotice(reply: string, agentClass: AgentClass) {
+function formatQuestReplyForNotice(reply: string, agentClass: AgentClass, agentRace: AgentRace) {
   const normalized = reply.trim()
 
   if (!normalized) {
-    return emptyQuestReplyForClass(agentClass)
+    return emptyQuestReplyForClass(agentClass, agentRace)
   }
 
   return normalized
 }
 
-function formatQuestCompletionNotice(reply: string, agentClass: AgentClass, levelUpTo?: number | null) {
-  const lines = [questCompletionLeadForClass(agentClass)]
+function formatQuestCompletionNotice(
+  reply: string,
+  agentClass: AgentClass,
+  agentRace: AgentRace,
+  levelUpTo?: number | null,
+) {
+  const lines = [questCompletionLeadForReply(reply, agentClass, agentRace)]
 
   if (typeof levelUpTo === 'number' && Number.isFinite(levelUpTo)) {
     lines.push(`Level up! Lv. ${levelUpTo}.`)
@@ -4482,76 +5276,385 @@ function formatQuestCompletionNotice(reply: string, agentClass: AgentClass, leve
   return lines.join('\n')
 }
 
-function questCompletionLeadForClass(agentClass: AgentClass) {
-  switch (agentClass) {
-    case 'paladin':
-      return "I have completed my quest, m'lord."
-    case 'cleric':
-      return 'I have completed my quest in peace.'
-    case 'ranger':
-      return 'I have completed my quest and returned from the trail.'
-    case 'rogue':
-      return 'I have completed my quest and slipped back unseen.'
+function questVoiceComboKey(agentClass: AgentClass, agentRace: AgentRace) {
+  return `${agentClass}:${agentRace}`
+}
+
+function questActivityCategoryForPrompt(source: string): QuestActivityCategory {
+  const normalized = source.toLowerCase()
+
+  if (
+    includesAny(normalized, [
+      'write',
+      'file',
+      'files',
+      'patch',
+      'edit',
+      'update',
+      'create',
+      'draft',
+      'compose',
+      'json',
+      'markdown',
+      'readme',
+      'document',
+      'docs',
+      'commit',
+      'save',
+    ])
+  ) {
+    return 'writing'
   }
+
+  if (
+    includesAny(normalized, [
+      'research',
+      'investigate',
+      'analysis',
+      'analyze',
+      'assess',
+      'compare',
+      'study',
+      'feasibility',
+      'look into',
+      'review',
+      'summarize',
+      'find out',
+      'inspect',
+    ])
+  ) {
+    return 'research'
+  }
+
+  if (
+    includesAny(normalized, [
+      'internet',
+      'web',
+      'website',
+      'online',
+      'browse',
+      'google',
+      'movie times',
+      'weather',
+      'near me',
+      'download',
+      'fetch',
+      'http',
+      'https',
+      'url',
+      'link',
+      'news',
+      'api',
+    ])
+  ) {
+    return 'internet'
+  }
+
+  if (
+    includesAny(normalized, [
+      'fight',
+      'battle',
+      'monster',
+      'slay',
+      'defeat',
+      'kill',
+      'dragon',
+      'beast',
+      'hunt',
+      'combat',
+      'quarry',
+      'bug',
+      'boss',
+    ])
+  ) {
+    return 'combat'
+  }
+
+  return 'busywork'
 }
 
-function questDepartureBubble(prompt: string, agentClass: AgentClass, connectionMode: ConnectionMode) {
-  return buildQuestProgressBubbles(prompt, agentClass, connectionMode)[0] ?? 'I am upon the task.'
+function classifyQuestResponseType(reply: string): QuestResponseType {
+  const normalized = reply.trim().toLowerCase()
+  if (!normalized) {
+    return 'completed'
+  }
+
+  if (
+    normalized.includes('?') ||
+    includesAny(normalized, [
+      'permission',
+      'clarify',
+      'clarification',
+      'need your',
+      'need more',
+      'please provide',
+      'please confirm',
+      'should i',
+      'would you like',
+      'which ',
+      'what ',
+      'where ',
+      'when ',
+      'how ',
+      'approve',
+      'approval',
+      'confirm',
+      'choose',
+      'question',
+      'before i continue',
+    ])
+  ) {
+    return 'needs_input'
+  }
+
+  if (
+    includesAny(normalized, [
+      'cannot',
+      "can't",
+      'unable',
+      'failed',
+      'error',
+      'blocked',
+      'rejected',
+      'refused',
+      'missing',
+      'denied',
+      'could not',
+      "couldn't",
+      'timed out',
+      'forbidden',
+      'no access',
+      'not possible',
+      'unavailable',
+    ])
+  ) {
+    return 'blocked'
+  }
+
+  return 'completed'
 }
 
-function buildQuestProgressBubbles(prompt: string, agentClass: AgentClass, connectionMode: ConnectionMode) {
-  const theme = classifyQuestTheme(prompt)
-  const connectionLead = connectionModeProgressBubble(connectionMode)
+function looksLikeQuestAcknowledgement(reply: string) {
+  const normalized = reply.trim().toLowerCase()
+  if (!normalized || classifyQuestResponseType(reply) !== 'completed') {
+    return false
+  }
 
-  switch (theme) {
-    case 'texts':
-      return [
-        connectionLead ?? 'I unroll the dusty charts.',
-        'I study these ancient texts with care.',
-        'I follow each footnote and weathered trail.',
-        'I gather what lore the wide web will yield.',
-      ]
-    case 'wards':
-      return [
-        connectionLead ?? 'I examine the wards and seals.',
-        'I test each sigil for cracks and false light.',
-        'I seek the proper seal of passage.',
-        'I press upon the gate with cautious hand.',
-      ]
-    case 'forge':
-      return [
-        connectionLead ?? questForgeBubbleForClass(agentClass),
-        'I inspect the gears, sparks, and crooked runes.',
-        'I test the troublesome bits one by one.',
-        'I keep at the mending till the craft yields.',
-      ]
+  return includesAny(normalized, [
+    "i'll",
+    'i will',
+    'let me',
+    'working on it',
+    'on it',
+    'looking into',
+    'digging into',
+    'checking now',
+    'searching now',
+    'gathering that',
+    'give me a moment',
+    'one moment',
+    'hang tight',
+    'stand by',
+    'fetching that',
+    'finding that',
+    'i can do that',
+    'will do',
+    'right away',
+  ])
+}
+
+function formatMobileQuestActivityStatus(status: string | null | undefined, waitingForApproval?: boolean) {
+  if (waitingForApproval) {
+    return 'Needs host approval'
+  }
+
+  const normalized = status?.trim().toLowerCase()
+  if (!normalized) {
+    return 'Quest in progress'
+  }
+
+  if (includesAny(normalized, ['running', 'active', 'working', 'busy'])) {
+    return 'Quest underway'
+  }
+  if (includesAny(normalized, ['queued', 'pending'])) {
+    return 'Awaiting return'
+  }
+  if (includesAny(normalized, ['blocked', 'error', 'failed'])) {
+    return 'Quest impeded'
+  }
+  if (includesAny(normalized, ['done', 'completed', 'ended'])) {
+    return 'Returning'
+  }
+
+  return 'Quest in progress'
+}
+
+function synthesizeMobileQuestActivitySummary(
+  status: string | null | undefined,
+  actorName: string,
+  waitingForApproval?: boolean,
+) {
+  if (waitingForApproval) {
+    return 'The task reached a host-side approval gate. OpenClaw needs confirmation before it can keep going.'
+  }
+
+  const normalized = status?.trim().toLowerCase()
+  if (!normalized) {
+    return ''
+  }
+
+  if (includesAny(normalized, ['running', 'active', 'working', 'busy'])) {
+    return `${actorName} is still out in the field working through this quest.`
+  }
+  if (includesAny(normalized, ['queued', 'pending'])) {
+    return `${actorName} has the quest in hand and is waiting on the next step.`
+  }
+  if (includesAny(normalized, ['blocked', 'error', 'failed'])) {
+    return `${actorName} hit trouble on the trail and may need help from the host.`
+  }
+  if (includesAny(normalized, ['done', 'completed', 'ended'])) {
+    return `${actorName} appears to be wrapping things up.`
+  }
+
+  return ''
+}
+
+function formatMobileQuestElapsed(startedAt: number, runtimeMs: number | null | undefined, now: number) {
+  const elapsedMs = runtimeMs && runtimeMs > 0 ? runtimeMs : Math.max(0, now - startedAt)
+  const totalSeconds = Math.max(1, Math.round(elapsedMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`
+}
+
+function hashQuestVoiceSeed(source: string) {
+  let hash = 0
+  for (let index = 0; index < source.length; index += 1) {
+    hash = (hash * 31 + source.charCodeAt(index)) | 0
+  }
+  return Math.abs(hash)
+}
+
+function rotateVoiceLines(lines: string[], seedSource: string, count: number) {
+  if (lines.length === 0) {
+    return []
+  }
+
+  const start = hashQuestVoiceSeed(seedSource) % lines.length
+  const next: string[] = []
+  const targetCount = Math.min(count, lines.length)
+  for (let index = 0; index < targetCount; index += 1) {
+    next.push(lines[(start + index) % lines.length] ?? lines[0] ?? '')
+  }
+  return next.filter(Boolean)
+}
+
+function pickVoiceLine(lines: string[], seedSource: string, fallback: string) {
+  if (lines.length === 0) {
+    return fallback
+  }
+
+  return lines[hashQuestVoiceSeed(seedSource) % lines.length] ?? fallback
+}
+
+function defaultQuestCompletionLead(agentClass: AgentClass, responseType: QuestResponseType) {
+  switch (responseType) {
+    case 'needs_input':
+      switch (agentClass) {
+        case 'paladin':
+          return "I return for thy guidance before I proceed."
+        case 'cleric':
+          return 'I return with a question that asks thy judgment.'
+        case 'ranger':
+          return 'Trail splits here. I need your call.'
+        case 'rogue':
+          return 'Small snag. I need your word before I keep moving.'
+      }
+    case 'blocked':
+      switch (agentClass) {
+        case 'paladin':
+          return 'I return with a barrier plainly named.'
+        case 'cleric':
+          return 'The work met troubled resistance, and I bring the obstacle plainly.'
+        case 'ranger':
+          return 'The trail is blocked, and here is why.'
+        case 'rogue':
+          return 'Locked tight. Here is the snag.'
+      }
     default:
-      return [
-        connectionLead ?? questGeneralBubbleForClass(agentClass),
-        'I gather the clues and set them in order.',
-        'I press on through the troublesome parts.',
-        'I am still at work. Hold fast a moment.',
-      ]
+      switch (agentClass) {
+        case 'paladin':
+          return "I have completed my quest, m'lord."
+        case 'cleric':
+          return 'I have completed my quest in peace.'
+        case 'ranger':
+          return 'I have completed my quest and returned from the trail.'
+        case 'rogue':
+          return 'I have completed my quest and slipped back unseen.'
+      }
   }
+}
+
+function questCompletionLeadForReply(reply: string, agentClass: AgentClass, agentRace: AgentRace) {
+  const responseType = classifyQuestResponseType(reply)
+  const lines = QUEST_VOICE_PACK.questReturnLeads[responseType] ?? []
+  return pickVoiceLine(
+    lines,
+    `${questVoiceComboKey(agentClass, agentRace)}:${responseType}:${reply}`,
+    defaultQuestCompletionLead(agentClass, responseType),
+  )
+}
+
+function questDepartureBubble(
+  prompt: string,
+  agentClass: AgentClass,
+  agentRace: AgentRace,
+  connectionMode: ConnectionMode,
+) {
+  return buildQuestProgressBubbles(prompt, agentClass, agentRace, connectionMode)[0] ?? 'I am upon the task.'
+}
+
+function buildQuestProgressBubbles(
+  prompt: string,
+  agentClass: AgentClass,
+  agentRace: AgentRace,
+  connectionMode: ConnectionMode,
+) {
+  const comboKey = questVoiceComboKey(agentClass, agentRace)
+  const activityCategory = questActivityCategoryForPrompt(prompt)
+  const connectionLead = connectionModeProgressBubble(connectionMode)
+  const comboBuckets = QUEST_VOICE_PACK.activityBubblesByCombo[comboKey]
+  const selected = rotateVoiceLines(
+    comboBuckets?.[activityCategory] ?? [],
+    `${comboKey}:${activityCategory}:${connectionMode}:${prompt}`,
+    4,
+  )
+
+  if (connectionLead) {
+    return [connectionLead, ...selected]
+  }
+
+  return selected.length > 0 ? selected : [questGeneralBubbleForClass(agentClass)]
 }
 
 function formatQuestProgressEventBubble(
   progressEvent: QuestProgressEvent,
   prompt: string,
   agentClass: AgentClass,
+  agentRace: AgentRace,
   connectionMode: ConnectionMode,
 ) {
-  const theme = classifyQuestTheme(prompt)
+  const progressBubbles = buildQuestProgressBubbles(prompt, agentClass, agentRace, connectionMode)
 
   switch (progressEvent.stage) {
     case 'remote-config':
-      return 'I make ready the far gate and mark the road.'
+      return connectionModeProgressBubble(connectionMode) ?? progressBubbles[0] ?? 'I make ready the road.'
     case 'runner-cached':
       return 'I know this road well and take the swifter path.'
     case 'runner-discovery':
       return 'I seek the surest road into the matter.'
     case 'runner-direct':
-      return connectionModeProgressBubble(connectionMode) ?? questGeneralBubbleForClass(agentClass)
+      return progressBubbles[0] ?? questGeneralBubbleForClass(agentClass)
     case 'gateway-fallback':
       return 'The first gate was barred. I seek another road through.'
     case 'gateway-health':
@@ -4565,13 +5668,13 @@ function formatQuestProgressEventBubble(
     case 'docker-retry':
       return 'The iron vessel answers. I venture in once more.'
     case 'agent-working':
-      return buildQuestProgressBubbles(prompt, agentClass, connectionMode)[1] ?? 'I am upon the task.'
+      return progressBubbles[1] ?? progressBubbles[0] ?? 'I am upon the task.'
     case 'agent-delayed':
-      return questDelayBubbleForTheme(theme, agentClass)
+      return progressBubbles[2] ?? progressBubbles[1] ?? progressBubbles[0] ?? 'I am still at work.'
     case 'agent-long-wait':
-      return questLongWaitBubbleForTheme(theme, agentClass)
+      return progressBubbles[3] ?? progressBubbles[2] ?? progressBubbles[1] ?? 'Still I press on.'
     case 'agent-output':
-      return questOutputBubbleForTheme(theme, agentClass)
+      return progressBubbles[4] ?? progressBubbles[3] ?? progressBubbles[2] ?? 'At last, the trail yields.'
     default:
       return null
   }
@@ -5088,7 +6191,10 @@ function formatCatalogRetryDelay(retryAfterMs: number) {
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
 }
 
-function validateGatewayDraftInput(draft: Pick<DraftConfig, 'gatewayUrl' | 'gatewayToken'>) {
+function validateGatewayDraftInput(
+  draft: Pick<DraftConfig, 'gatewayUrl' | 'gatewayToken'>,
+  options: { allowInsecureToken?: boolean } = {},
+) {
   const gatewayUrl = draft.gatewayUrl.trim()
   if (!gatewayUrl) {
     return 'Enter your OpenClaw Gateway URL first.'
@@ -5105,7 +6211,11 @@ function validateGatewayDraftInput(draft: Pick<DraftConfig, 'gatewayUrl' | 'gate
     return 'The Gateway URL must start with http://, https://, ws://, or wss://.'
   }
 
-  if (draft.gatewayToken.trim() && !['https:', 'wss:'].includes(parsedUrl.protocol)) {
+  if (
+    draft.gatewayToken.trim() &&
+    !options.allowInsecureToken &&
+    !['https:', 'wss:'].includes(parsedUrl.protocol)
+  ) {
     return 'Gateway tokens only work with a secure https:// or wss:// address.'
   }
 
@@ -5316,29 +6426,46 @@ function formatGatewayEndpointLabel(gatewayUrl?: string) {
   }
 }
 
-function returnedBubbleForClass(agentClass: AgentClass) {
-  switch (agentClass) {
-    case 'paladin':
-      return "I return, m'lord."
-    case 'cleric':
-      return 'I return in peace.'
-    case 'ranger':
-      return 'Back from the trail.'
-    case 'rogue':
-      return 'Back in one piece.'
-  }
+function returnedBubbleForReply(reply: string, agentClass: AgentClass, agentRace: AgentRace) {
+  const responseType = classifyQuestResponseType(reply)
+  const comboKey = questVoiceComboKey(agentClass, agentRace)
+  return pickVoiceLine(
+    QUEST_VOICE_PACK.returnBubblesByCombo[comboKey]?.[responseType] ?? [],
+    `${comboKey}:${responseType}:bubble:${reply}`,
+    emptyQuestReplyForClass(agentClass, agentRace),
+  )
 }
 
-function emptyQuestReplyForClass(agentClass: AgentClass) {
+function emptyQuestReplyForClass(agentClass: AgentClass, agentRace: AgentRace) {
+  const responseType: QuestResponseType = 'completed'
+  const comboKey = questVoiceComboKey(agentClass, agentRace)
+  const fallback = (() => {
+    switch (agentClass) {
+      case 'paladin':
+        return "By thy leave, m'lord, the deed is done."
+      case 'cleric':
+        return 'Peace be with thee. The work now rests complete.'
+      case 'ranger':
+        return "Trail's clear. Job's done."
+      case 'rogue':
+        return 'Heh. Done and dusted.'
+    }
+  })()
+
+  const comboLines = QUEST_VOICE_PACK.returnBubblesByCombo[comboKey]?.[responseType] ?? []
+  if (comboLines.length > 0) {
+    return comboLines[0] ?? fallback
+  }
+
   switch (agentClass) {
     case 'paladin':
-      return "By thy leave, m'lord, the deed is done."
+      return fallback
     case 'cleric':
-      return 'Peace be with thee. The work now rests complete.'
+      return fallback
     case 'ranger':
-      return "Trail's clear. Job's done."
+      return fallback
     case 'rogue':
-      return 'Heh. Done and dusted.'
+      return fallback
   }
 }
 

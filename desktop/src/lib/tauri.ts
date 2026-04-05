@@ -116,8 +116,13 @@ export type QuestOutcome = {
 }
 
 export type QuestSessionUpdate = {
-  reply: string
-  messageFingerprint: string
+  reply?: string | null
+  messageFingerprint?: string | null
+  summary?: string | null
+  status?: string | null
+  runtimeMs?: number | null
+  displayName?: string | null
+  waitingForApproval?: boolean
 }
 
 export type QuestProgressStage =
