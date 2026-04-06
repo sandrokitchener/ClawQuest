@@ -57,6 +57,10 @@ import {
   type RegistrySkill,
   type SkillRoot,
 } from './lib/tauri'
+import {
+  buildStoredConnectionSettings,
+  parseStoredConnectionSettings,
+} from './lib/connectionSettings'
 
 type AgentClass = 'cleric' | 'ranger' | 'rogue' | 'paladin'
 type AgentRace = 'elf' | 'orc' | 'human' | 'halfling' | 'tiefling' | 'goblin'
@@ -2770,6 +2774,7 @@ export default function App() {
           <textarea
             ref={questInputRef}
             disabled={questBusy}
+            enterKeyHint="enter"
             onChange={(event) => setQuestDraft(event.target.value)}
             placeholder="Fix the build, scout the web, guard the repo..."
             value={questDraft}
@@ -3782,8 +3787,8 @@ export default function App() {
                     </label>
 
                     <p className="tool-note">
-                      This phone saves the gateway profile locally, including the current token, and only contacts
-                      that gateway when you actually launch a remote quest.
+                      This phone saves the gateway URL locally, but the current token stays in memory for this session
+                      only and is not written into device storage.
                     </p>
 
                     <p className="tool-note">
@@ -4410,38 +4415,25 @@ function hasGatewayWizardConfig(draft: DraftConfig) {
 function readStoredConnectionSettings(): Partial<DraftConfig> {
   try {
     const raw = window.localStorage.getItem(CONNECTION_SETTINGS_STORAGE_KEY)
-    if (!raw) {
-      return {}
-    }
-
-    const parsed = JSON.parse(raw) as Partial<DraftConfig>
-    const persistGatewayToken = detectMobileShell()
-    return {
-      connectionMode:
-        parsed.connectionMode === 'remote' || parsed.connectionMode === 'docker' ? parsed.connectionMode : 'local',
-      gatewayUrl: typeof parsed.gatewayUrl === 'string' ? parsed.gatewayUrl : '',
-      gatewayToken: persistGatewayToken && typeof parsed.gatewayToken === 'string' ? parsed.gatewayToken : '',
-      dockerContainer: typeof parsed.dockerContainer === 'string' ? parsed.dockerContainer : '',
-      dockerCommand: typeof parsed.dockerCommand === 'string' && parsed.dockerCommand.trim() ? parsed.dockerCommand : 'openclaw',
-      dockerWorkdir: typeof parsed.dockerWorkdir === 'string' ? parsed.dockerWorkdir : '',
-    }
+    return parseStoredConnectionSettings(raw)
   } catch {
     return {}
   }
 }
 
 function writeStoredConnectionSettings(draft: DraftConfig) {
-  const persistGatewayToken = detectMobileShell()
   window.localStorage.setItem(
     CONNECTION_SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      connectionMode: draft.connectionMode,
-      gatewayUrl: draft.gatewayUrl,
-      gatewayToken: persistGatewayToken ? draft.gatewayToken : '',
-      dockerContainer: draft.dockerContainer,
-      dockerCommand: draft.dockerCommand,
-      dockerWorkdir: draft.dockerWorkdir,
-    }),
+    JSON.stringify(
+      buildStoredConnectionSettings({
+        connectionMode: draft.connectionMode,
+        gatewayUrl: draft.gatewayUrl,
+        gatewayToken: draft.gatewayToken,
+        dockerContainer: draft.dockerContainer,
+        dockerCommand: draft.dockerCommand,
+        dockerWorkdir: draft.dockerWorkdir,
+      }),
+    ),
   )
 }
 

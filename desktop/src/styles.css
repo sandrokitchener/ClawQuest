@@ -699,6 +699,53 @@ textarea {
   display: none;
 }
 
+.pixel-shell-mobile .slot-card {
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 9px;
+}
+
+.pixel-shell-mobile .slot-index {
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 6px;
+}
+
+.pixel-shell-mobile .slot-index .pixel-svg {
+  width: 22px;
+  height: 22px;
+}
+
+.pixel-shell-mobile .slot-body {
+  gap: 6px;
+}
+
+.pixel-shell-mobile .slot-head {
+  gap: 6px;
+}
+
+.pixel-shell-mobile .slot-head strong {
+  font-size: 0.78rem;
+  line-height: 1.05;
+}
+
+.pixel-shell-mobile .slot-head span {
+  margin-top: 2px;
+  font-size: 0.64rem;
+}
+
+.pixel-shell-mobile .slot-head .status-chip {
+  padding: 4px 6px;
+  font-size: 0.58rem;
+}
+
+.pixel-shell-mobile .slot-meta,
+.pixel-shell-mobile .skill-copy,
+.pixel-shell-mobile .reason-row {
+  display: none;
+}
+
 .pixel-shell-mobile .quest-console {
   margin-top: 0;
   padding-top: 0;
@@ -1808,6 +1855,11 @@ textarea {
   font-family: var(--font-display);
   font-size: 0.92rem;
   line-height: 1.15;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   transition:
     transform 160ms steps(2),
     filter 160ms steps(2),
@@ -3011,15 +3063,7 @@ body.skill-dragging * {
     top: 98px;
   }
 
-  .slot-card {
-    grid-template-columns: 1fr;
-  }
-
   .pixel-shell-mobile .catalog-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .slot-index {
-    width: 100%;
   }
 }

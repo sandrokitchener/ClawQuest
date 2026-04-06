@@ -27,3 +27,5 @@ playwright-report
 test-results
 .playwright
 rustup-init.exe
+tmp-*.apk
+tmp-phone-*.png

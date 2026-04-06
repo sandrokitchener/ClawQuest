@@ -56,6 +56,9 @@ const MOBILE_GATEWAY_SESSION_KEY: &str = "main";
 const MOBILE_GATEWAY_MANAGER_SESSION_KEY: &str = "clawquest-manager";
 const MOBILE_GATEWAY_HISTORY_POLL_LIMIT: u64 = 8;
 const MOBILE_GATEWAY_SESSION_SUBSCRIBE_WAIT_MS: u64 = 20_000;
+const DEFAULT_REMOTE_GATEWAY_MODEL: &str = "openclaw/default";
+const CLAWQUEST_INSTALL_OK_PREFIX: &str = "CLAWQUEST_INSTALL_OK";
+const CLAWQUEST_UNINSTALL_OK_PREFIX: &str = "CLAWQUEST_UNINSTALL_OK";
 static RUNNER_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
 
 type GatewayWsStream = tokio_tungstenite::WebSocketStream<
@@ -953,16 +956,12 @@ pub async fn uninstall_registry_skill(
   let resolved = resolve_manager_config(config)?;
   let safe_slug = sanitize_slug(&slug)?;
   if should_use_remote_gateway_manager_transport(&resolved) {
-    let gateway_url = resolved
-      .gateway_url
-      .as_deref()
-      .map(str::trim)
-      .filter(|value| !value.is_empty())
-      .unwrap_or("the linked gateway");
-    let _ = window;
-    return Err(format!(
-      "Removing gateway-host skills from Android is not wired up yet. Remove {safe_slug} from {gateway_url} on the OpenClaw host for now."
-    ));
+    let app_data_dir = window
+      .app_handle()
+      .path()
+      .app_data_dir()
+      .map_err(|error| error.to_string())?;
+    return uninstall_registry_skill_via_remote_gateway(&resolved, &app_data_dir, &safe_slug).await;
   }
   let target_dir = resolve_uninstall_target(&resolved, &safe_slug, path)?;
   let default_target = normalized_path(&resolved.skills_dir.join(&safe_slug));
@@ -1607,7 +1606,7 @@ async fn send_prompt_via_remote_gateway_http(
   let endpoint = remote_gateway_chat_completions_url(resolved)?;
   let client = build_gateway_prompt_client()?;
   let mut request = client.post(endpoint.clone()).json(&serde_json::json!({
-    "model": "openclaw/default",
+    "model": DEFAULT_REMOTE_GATEWAY_MODEL,
     "messages": [
       {
         "role": "user",
@@ -4419,7 +4418,7 @@ async fn install_registry_skill_via_remote_gateway(
   version: &str,
 ) -> Result<InstallOutcome, String> {
   let prompt = format!(
-    "Use the shell on this OpenClaw host to run exactly `openclaw skills install {slug} --version {version}` in the active workspace. Wait for the command to finish. If it succeeds or the skill is already present, reply exactly `CLAWQUEST_INSTALL_OK {slug}`. If it fails, reply exactly `CLAWQUEST_INSTALL_ERROR {slug}: <short reason>`. Do not ask follow-up questions."
+    "Use the shell on this OpenClaw host to run exactly `openclaw skills install {slug} --version {version}` in the active workspace. Wait for the command to finish. If it succeeds or the skill is already present, reply exactly `{CLAWQUEST_INSTALL_OK_PREFIX} {slug}`. If it fails, reply exactly `CLAWQUEST_INSTALL_ERROR {slug}: <short reason>`. Do not ask follow-up questions."
   );
   let reply = send_hidden_manager_prompt_via_remote_gateway(resolved, &prompt, app_data_dir)
     .await?
@@ -4442,6 +4441,38 @@ async fn install_registry_skill_via_remote_gateway(
   } else {
     Err(format!(
       "Claw Quest asked the connected OpenClaw gateway to install {slug}, but the skill still did not appear in the gateway skill list.\n\nGateway reply:\n{}",
+      summarize_gateway_body(normalized_reply)
+    ))
+  }
+}
+
+async fn uninstall_registry_skill_via_remote_gateway(
+  resolved: &ResolvedManagerConfig,
+  app_data_dir: &Path,
+  slug: &str,
+) -> Result<ActionOutcome, String> {
+  let prompt = format!(
+    "Use the shell on this OpenClaw host to remove the `{slug}` skill from the active workspace using the supported OpenClaw CLI uninstall flow. Wait for the command to finish. If it succeeds or the skill is already absent, reply exactly `{CLAWQUEST_UNINSTALL_OK_PREFIX} {slug}`. If it fails, reply exactly `CLAWQUEST_UNINSTALL_ERROR {slug}: <short reason>`. Do not ask follow-up questions."
+  );
+  let reply = send_hidden_manager_prompt_via_remote_gateway(resolved, &prompt, app_data_dir)
+    .await?
+    .reply;
+  let state = build_remote_gateway_manager_state(resolved, app_data_dir).await?;
+  if state.installed.iter().all(|item| item.slug != slug) {
+    return Ok(ActionOutcome {
+      state,
+      notice: format!("Removed {slug} from the connected OpenClaw gateway."),
+    });
+  }
+
+  let normalized_reply = reply.trim();
+  if normalized_reply.is_empty() {
+    Err(format!(
+      "Claw Quest asked the connected OpenClaw gateway to remove {slug}, but the skill still appears in the gateway skill list."
+    ))
+  } else {
+    Err(format!(
+      "Claw Quest asked the connected OpenClaw gateway to remove {slug}, but the skill still appears in the gateway skill list.\n\nGateway reply:\n{}",
       summarize_gateway_body(normalized_reply)
     ))
   }
