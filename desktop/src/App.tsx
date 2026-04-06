@@ -1834,12 +1834,15 @@ export default function App() {
   async function handleRefresh() {
     const nextConfig = appliedConfig ?? configFromDraft(draftConfig)
     if (isMobileShell && nextConfig?.connectionMode === 'remote') {
-      const gatewayDraftIssue = validateGatewayDraftInput({
-        gatewayUrl: nextConfig.gatewayUrl ?? draftConfig.gatewayUrl,
-        gatewayToken: nextConfig.gatewayToken ?? draftConfig.gatewayToken,
-      }, {
-        allowInsecureToken: true,
-      })
+      const gatewayDraftIssue = validateGatewayDraftInput(
+        {
+          gatewayUrl: nextConfig.gatewayUrl ?? draftConfig.gatewayUrl,
+          gatewayToken: nextConfig.gatewayToken ?? draftConfig.gatewayToken,
+        },
+        {
+          allowInsecureToken: true,
+        },
+      )
       if (gatewayDraftIssue) {
         setError(gatewayDraftIssue)
         return
@@ -2239,21 +2242,21 @@ export default function App() {
     try {
       if (questPreviewOnlyMode) {
         if (runtime && isMobileShell && !mobileDemoMode) {
-          const previewOnlyMessage = formatMobileQuestPreviewOnlyMessage(activeConnectionMode, gatewayUrl)
+          const unavailableMessage = formatMobileQuestUnavailableMessage(activeConnectionMode, gatewayUrl)
           appendQuestLogEntries([
             {
               tone: 'warning',
-              title: 'Android preview mode is still active',
-              detail: 'This build did not attempt a live OpenClaw request from the phone.',
+              title: 'Remote Gateway mode is required',
+              detail: 'This phone only sends live quests through a linked Remote Gateway session.',
             },
             {
               tone: 'warning',
               title: 'Why no connection was tested',
-              detail: formatMobileQuestPreviewReason(activeConnectionMode),
+              detail: formatMobileQuestUnavailableReason(activeConnectionMode),
             },
           ])
-          setQuestError(previewOnlyMessage)
-          setQuestBubble('This shell still only rehearses the quest.')
+          setQuestError(unavailableMessage)
+          setQuestBubble('Switch to Remote Gateway mode to continue the quest.')
           setQuestMood('error')
           setActiveQuestPrompt('')
           questProgressContextRef.current = {
@@ -2273,7 +2276,7 @@ export default function App() {
           runtime && isMobileShell && mobileDemoMode
             ? 'I walked the demo road and returned with a practice report from the guild hall.'
             : isMobileShell
-              ? 'Gateway profile saved. Live mobile quest dispatch is the next forge step.'
+              ? 'Gateway profile saved. Switch to Remote Gateway mode to send live mobile quests.'
               : 'Quest preview only in browser mode.'
 
         setQuestsCompleted(nextQuestCount)
@@ -2300,7 +2303,7 @@ export default function App() {
         appendQuestLogEntries([
           {
             tone: 'clean',
-            title: runtime && isMobileShell && mobileDemoMode ? 'Demo quest completed' : 'Preview quest completed',
+            title: runtime && isMobileShell && mobileDemoMode ? 'Demo quest completed' : 'Practice quest completed',
             detail: replyNotice,
           },
         ])
@@ -2788,7 +2791,7 @@ export default function App() {
           type="button"
         >
           {questBusy ? <LoaderCircle className="spin" size={16} /> : <MessageCircle size={16} />}
-          {questBusy ? 'Sending' : isMobileShell ? (liveMobileRemoteQuests ? 'Quest' : 'Preview Quest') : 'Quest'}
+          {questBusy ? 'Sending' : isMobileShell ? (liveMobileRemoteQuests ? 'Quest' : 'Link Gateway') : 'Quest'}
         </button>
       </div>
 
@@ -2868,7 +2871,7 @@ export default function App() {
               <span>
                 {isMobileShell
                   ? mobileGatewayReady
-                    ? 'Mobile gateway prototype'
+                    ? 'Mobile gateway linked'
                     : 'Link your OpenClaw Gateway'
                   : runtime
                     ? 'Desktop skill manager'
@@ -5919,28 +5922,28 @@ function buildQuestFailureLogEntries({
   return entries
 }
 
-function formatMobileQuestPreviewOnlyMessage(connectionMode: ConnectionMode, gatewayUrl: string) {
+function formatMobileQuestUnavailableMessage(connectionMode: ConnectionMode, gatewayUrl: string) {
   if (connectionMode === 'remote') {
-    return `Android still uses preview-only quest dispatch in this build. No live request was sent to ${formatGatewayEndpointLabel(gatewayUrl)}.`
+    return `Android could not send a live request to ${formatGatewayEndpointLabel(gatewayUrl)} from this session.`
   }
 
   if (connectionMode === 'docker') {
-    return 'Android still uses preview-only quest dispatch in this build. No live Docker request was sent from the phone.'
+    return 'Android only sends live quests through Remote Gateway mode. No live Docker request was sent from the phone.'
   }
 
-  return 'Android still uses preview-only quest dispatch in this build. No live OpenClaw request was sent from the phone.'
+  return 'Android only sends live quests through Remote Gateway mode. No live local OpenClaw request was sent from the phone.'
 }
 
-function formatMobileQuestPreviewReason(connectionMode: ConnectionMode) {
+function formatMobileQuestUnavailableReason(connectionMode: ConnectionMode) {
   if (connectionMode === 'remote') {
-    return 'Remote mode in this shell still depends on a device-local OpenClaw CLI runner, and the Android build does not bundle that runner yet.'
+    return 'Reconnect the linked Remote Gateway session, then try the quest again.'
   }
 
   if (connectionMode === 'docker') {
-    return 'Docker quest transport is not wired up from the Android shell yet, so this mode still rehearses the quest only.'
+    return 'Docker quest transport is not available from the Android shell. Switch to Remote Gateway mode.'
   }
 
-  return 'The Android shell does not bundle a local OpenClaw CLI runner yet, so local mode still rehearses the quest only.'
+  return 'The Android shell does not bundle a local OpenClaw CLI runner. Switch to Remote Gateway mode.'
 }
 
 function formatConnectionModeLabel(connectionMode: ConnectionMode) {
