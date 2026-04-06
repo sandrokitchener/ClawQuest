@@ -2767,6 +2767,8 @@ export default function App() {
       </div>
     ) : null
 
+  const displayedQuestBubble = clampQuestBubbleText(questBubble, isMobileShell)
+
   const questControls = (
     <div className="quest-controls">
       {mobileQuestPanel}
@@ -3134,7 +3136,7 @@ export default function App() {
 
               <div className={`portrait-card ${classTheme.cardClass}`}>
                 <div className="portrait-speech">
-                  <div className={`quest-bubble quest-bubble-${questMood}`}>{questBubble}</div>
+                  <div className={`quest-bubble quest-bubble-${questMood}`}>{displayedQuestBubble}</div>
                 </div>
 
                 <div className="portrait-frame">
@@ -5520,6 +5522,31 @@ function formatMobileQuestElapsed(startedAt: number, runtimeMs: number | null | 
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, '0')}s` : `${seconds}s`
+}
+
+function clampQuestBubbleText(text: string, mobileShell: boolean) {
+  const normalized = text.trim().replace(/\s+/g, ' ')
+  if (!normalized) {
+    return ''
+  }
+
+  const maxChars = mobileShell ? 44 : 58
+  if (normalized.length <= maxChars) {
+    return normalized
+  }
+
+  const words = normalized.split(' ')
+  let next = ''
+  for (const word of words) {
+    const candidate = next ? `${next} ${word}` : word
+    if (candidate.length > maxChars) {
+      break
+    }
+    next = candidate
+  }
+
+  const base = next || normalized.slice(0, maxChars)
+  return `${base.trimEnd().replace(/[.,;:!?-]+$/u, '')}...`
 }
 
 function hashQuestVoiceSeed(source: string) {

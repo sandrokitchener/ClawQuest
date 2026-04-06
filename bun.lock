@@ -10,7 +10,7 @@
     },
     "desktop": {
       "name": "@claw-quest/desktop",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "dependencies": {
         "@fontsource/bricolage-grotesque": "^5.2.10",
         "@fontsource/ibm-plex-mono": "^5.2.7",
