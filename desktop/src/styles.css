@@ -1367,30 +1367,14 @@ textarea {
 }
 
 .desktop-shop-launcher-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.desktop-shop-launcher-copy strong {
+  font-family: var(--font-display);
   font-size: 0.82rem;
   letter-spacing: 0.06em;
-}
-
-.desktop-shop-launcher-copy span {
-  color: rgba(75, 57, 44, 0.78);
-  font-family: var(--font-display);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-  text-transform: none;
 }
 
 .desktop-shop-launcher-primary {
   background: linear-gradient(180deg, #89a4d9 0%, #6f8cbf 100%);
   color: #fff7e6;
-}
-
-.desktop-shop-launcher-primary .desktop-shop-launcher-copy span {
-  color: rgba(255, 247, 230, 0.84);
 }
 
 .desktop-shop-launcher-active {
@@ -1404,10 +1388,6 @@ textarea {
 
 .desktop-shop-launcher-disabled:disabled {
   opacity: 1;
-}
-
-.desktop-shop-launcher-disabled .desktop-shop-launcher-copy span {
-  color: rgba(90, 82, 72, 0.78);
 }
 
 .catalog-grid,

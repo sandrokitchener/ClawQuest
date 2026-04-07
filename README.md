@@ -32,7 +32,7 @@ The current build focuses on a smoother OpenClaw experience:
 - send quest prompts to your OpenClaw agent
 - see quest progress and delayed follow-up completions on Android
 - receive Android `Quest complete` notifications when the app is backgrounded
-- connect from Android with QR, setup code, manual gateway entry, or demo mode
+- connect from Android with manual gateway entry or demo mode
 - customize speech bubbles and return flavor from JSON
 - play a main theme plus a separate merchant theme when the shop opens
 
@@ -130,8 +130,6 @@ Claw Quest on Android should open on its own. A gateway is only needed when you 
 
 The setup sheet currently offers:
 
-- `Scan QR`
-- `Paste Setup Code`
 - `Manual Setup`
 - `Try Demo`
 
@@ -140,13 +138,13 @@ Recommended connection flow:
 1. Install Claw Quest on the phone.
 2. On the OpenClaw host, run the `clawquest-connect` helper flow.
 3. Ask OpenClaw: `I want to connect ClawQuest`
-4. In Claw Quest Android, choose `Scan QR` or `Paste Setup Code`
-5. Approve the pending `Claw Quest Android` pairing request on the host if prompted
+4. In Claw Quest Android, choose `Manual Setup`
+5. Paste the gateway URL and token or password the helper sent you
+6. Let the helper approve the next `Claw Quest Android` pairing request once
 
 Notes:
 
-- If QR image scanning is unavailable on a particular Android WebView build, pasted OpenClaw setup codes still work.
-- `Manual Setup` is still available when you already know the gateway URL and token.
+- `Manual Setup` is the primary connection path.
 - `Try Demo` is useful for screenshots, first-run exploration, and reviewer-friendly installs.
 
 ## Connection model
@@ -159,9 +157,9 @@ Claw Quest does not replace OpenClaw. It sits beside it.
 
 If you want mobile pairing to feel smooth, the intended path is:
 
-- generate the official OpenClaw QR or setup code on the host
-- import that into Claw Quest Android
-- approve the pairing once on the host
+- use the host-side helper to send the current gateway URL and token or password to your phone over WhatsApp
+- paste those details into Claw Quest Android `Manual Setup`
+- let the host approve the next Android pairing request once
 
 ## Flavor and customization
 

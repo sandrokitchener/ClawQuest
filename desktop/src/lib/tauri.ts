@@ -268,11 +268,13 @@ export async function setDesktopWindowDocked(docked: boolean) {
   const height = docked ? DOCKED_WINDOW_HEIGHT : FULL_WINDOW_HEIGHT
   const targetSize = new LogicalSize(width, height)
 
-  await appWindow.setDecorations(docked)
-  await appWindow.setResizable(docked)
+  await appWindow.setDecorations(true)
+  await appWindow.setResizable(false)
   await appWindow.setSizeConstraints({
     minWidth: 780,
     minHeight: 680,
+    maxWidth: width,
+    maxHeight: height,
   })
   await appWindow.setSize(targetSize)
   await appWindow.center()

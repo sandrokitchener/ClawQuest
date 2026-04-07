@@ -24,7 +24,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
   type DragEvent,
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
@@ -111,21 +110,6 @@ type DraftConfig = {
   dockerCommand: string
   dockerWorkdir: string
 }
-type MobileSetupMode = 'manual' | 'setup-code' | 'scan'
-type OpenClawSetupPayload = {
-  gatewayUrl: string
-  bootstrapToken: string
-}
-type BarcodeDetectorResult = {
-  rawValue?: string
-}
-type BarcodeDetectorOptions = {
-  formats?: string[]
-}
-type BarcodeDetectorInstance = {
-  detect(source: ImageBitmapSource): Promise<BarcodeDetectorResult[]>
-}
-type BarcodeDetectorConstructor = new (options?: BarcodeDetectorOptions) => BarcodeDetectorInstance
 
 type PixelFill = 'accent' | 'cloth' | 'metal' | 'outline' | 'shade' | 'skin' | 'trim'
 type PixelRect = readonly [number, number, number, number, PixelFill]
@@ -847,12 +831,9 @@ export default function App() {
     return !hasGatewayWizardConfig(initialDraft) && !readMobileDemoMode()
   })
   const [mobileSetupStep, setMobileSetupStep] = useState(0)
-  const [mobileSetupMode, setMobileSetupMode] = useState<MobileSetupMode>('manual')
-  const [mobileSetupCode, setMobileSetupCode] = useState('')
   const [mobileSetupDismissed, setMobileSetupDismissed] = useState(false)
   const [mobileSetupError, setMobileSetupError] = useState('')
   const [mobileSetupWorking, setMobileSetupWorking] = useState(false)
-  const [mobileSetupScanning, setMobileSetupScanning] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [questDraft, setQuestDraft] = useState('')
   const [questBubble, setQuestBubble] = useState('Send me on a quest!')
@@ -900,7 +881,6 @@ export default function App() {
   const shellViewportRef = useRef<HTMLElement | null>(null)
   const mobileDemoModeRef = useRef(mobileDemoMode)
   const demoInstalledRef = useRef(demoInstalled)
-  const mobileSetupFileInputRef = useRef<HTMLInputElement | null>(null)
   const soundRefs = useRef<Partial<Record<UiSound, HTMLAudioElement>>>({})
   const backgroundMusicRefs = useRef<Record<BackgroundMusicKind, HTMLAudioElement | null>>({
     main: null,
@@ -921,7 +901,6 @@ export default function App() {
   const liveMobileRemoteQuests = runtime && isMobileShell && activeConnectionMode === 'remote'
   const shopVisible = isMobileShell ? mobileShopOpen : desktopShopOpen
   const featureDemoMode = !runtime && !isMobileShell && isFeatureDemoMode()
-  const mobileQrSetupAvailable = isMobileShell && supportsMobileSetupQrScan()
   const installedSlugs = new Set(state.installed.map((skill) => skill.slug))
   const readySkills = state.installed.filter((skill) => skill.status === 'ready')
   const riskyCount = readySkills.filter((skill) => isRiskyStatus(skill.security.status)).length
@@ -1880,7 +1859,7 @@ export default function App() {
     const nextDocked = !isDocked
     setIsDocked(nextDocked)
     setSettingsOpen(false)
-    setNotice(nextDocked ? 'Docked mode enabled.' : 'Full layout restored.')
+    setNotice(nextDocked ? 'Compact layout enabled.' : 'Full layout restored.')
 
     if (runtime) {
       void setDesktopWindowDocked(nextDocked).catch((caughtError) => {
@@ -1960,10 +1939,9 @@ export default function App() {
     setHoveredGearSlot(null)
   }
 
-  function openMobileSetup(step = 0, mode: MobileSetupMode = 'manual') {
+  function openMobileSetup(step = 0) {
     setMobileSetupError('')
     setMobileSetupStep(step)
-    setMobileSetupMode(mode)
     setMobileSetupDismissed(false)
     setMobileSetupOpen(true)
     setMobileShopOpen(false)
@@ -1973,12 +1951,6 @@ export default function App() {
     setMobileSetupDismissed(true)
     setMobileSetupOpen(false)
     setMobileSetupError('')
-  }
-
-  function handleSelectMobileSetupMode(mode: MobileSetupMode) {
-    setMobileSetupError('')
-    setMobileSetupMode(mode)
-    setMobileSetupStep(1)
   }
 
   async function finalizeMobileGatewaySetup(nextDraft: DraftConfig, successMessage: string) {
@@ -2004,107 +1976,9 @@ export default function App() {
       setMobileSetupOpen(false)
       setMobileSetupDismissed(false)
       setMobileSetupStep(0)
-      setMobileSetupMode('manual')
-      setMobileSetupCode('')
       return true
     } finally {
       setMobileSetupWorking(false)
-    }
-  }
-
-  async function handleImportMobileSetupCode(rawValue: string, successMessage: string) {
-    let payload: OpenClawSetupPayload
-    try {
-      payload = parseOpenClawSetupCode(rawValue)
-    } catch (caughtError) {
-      const message =
-        caughtError instanceof Error && caughtError.message.trim()
-          ? caughtError.message.trim()
-          : 'That setup code could not be decoded.'
-      setMobileSetupError(message)
-      setMobileSetupMode('setup-code')
-      setMobileSetupStep(1)
-      return
-    }
-
-    const nextDraft: DraftConfig = {
-      ...draftConfig,
-      connectionMode: 'remote',
-      gatewayUrl: payload.gatewayUrl,
-      gatewayToken: payload.bootstrapToken,
-    }
-    const gatewayDraftIssue = validateGatewayDraftInput(nextDraft, {
-      allowInsecureToken: true,
-    })
-    if (gatewayDraftIssue) {
-      setMobileSetupError(gatewayDraftIssue)
-      setMobileSetupMode('setup-code')
-      setMobileSetupStep(1)
-      return
-    }
-
-    await finalizeMobileGatewaySetup(nextDraft, successMessage)
-  }
-
-  function handleOpenMobileSetupQrPicker() {
-    if (!supportsMobileSetupQrScan()) {
-      setMobileSetupError('This Android WebView cannot scan QR images directly yet. Paste the setup code instead.')
-      setMobileSetupMode('setup-code')
-      setMobileSetupStep(1)
-      return
-    }
-
-    setMobileSetupError('')
-    mobileSetupFileInputRef.current?.click()
-  }
-
-  async function handleMobileSetupQrFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) {
-      return
-    }
-
-    const BarcodeDetectorCtor = getBarcodeDetectorConstructor()
-    if (!BarcodeDetectorCtor || typeof createImageBitmap !== 'function') {
-      setMobileSetupError('This Android build cannot scan QR images directly yet. Paste the setup code instead.')
-      setMobileSetupMode('setup-code')
-      setMobileSetupStep(1)
-      return
-    }
-
-    setMobileSetupScanning(true)
-    setMobileSetupError('')
-
-    try {
-      const bitmap = await createImageBitmap(file)
-      try {
-        const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] })
-        const results = await detector.detect(bitmap)
-        const rawValue =
-          results.find((entry) => typeof entry.rawValue === 'string' && entry.rawValue.trim())?.rawValue ?? ''
-
-        if (!rawValue.trim()) {
-          throw new Error('No QR code was detected in that image. Try a sharper photo or paste the setup code instead.')
-        }
-
-        await handleImportMobileSetupCode(
-          rawValue,
-          'Gateway linked from the OpenClaw setup QR.',
-        )
-      } finally {
-        bitmap.close()
-      }
-    } catch (caughtError) {
-      const message =
-        caughtError instanceof Error && caughtError.message.trim()
-          ? caughtError.message.trim()
-          : 'The QR image could not be read.'
-      setMobileSetupError(message)
-      setMobileSetupMode('scan')
-      setMobileSetupStep(1)
-    } finally {
-      setMobileSetupScanning(false)
     }
   }
 
@@ -2131,8 +2005,6 @@ export default function App() {
     setMobileSetupOpen(false)
     setMobileSetupDismissed(false)
     setMobileSetupStep(0)
-    setMobileSetupMode('manual')
-    setMobileSetupCode('')
     playUiSound('blip')
     setNotice('Demo mode is ready. You can explore Claw Quest before linking a gateway.')
   }
@@ -2143,7 +2015,6 @@ export default function App() {
     })
     if (gatewayDraftIssue) {
       setMobileSetupError(gatewayDraftIssue)
-      setMobileSetupMode('manual')
       setMobileSetupStep(1)
       return
     }
@@ -2840,10 +2711,7 @@ export default function App() {
         type="button"
       >
         <HandCoins size={18} />
-        <span className="desktop-shop-launcher-copy">
-          <strong>Equipment Merchant</strong>
-          <span>{desktopShopOpen ? 'Hide the skill shop' : 'Reveal the skill shop'}</span>
-        </span>
+        <span className="desktop-shop-launcher-copy">Skill Shop</span>
       </button>
 
       <button
@@ -2852,10 +2720,7 @@ export default function App() {
         type="button"
       >
         <Construction size={18} />
-        <span className="desktop-shop-launcher-copy">
-          <strong>Potion Shop Coming Soon</strong>
-          <span>Brewing a future prompt shop</span>
-        </span>
+        <span className="desktop-shop-launcher-copy">Potion Shop</span>
       </button>
     </div>
   ) : null
@@ -3604,7 +3469,7 @@ export default function App() {
               <Search size={16} />
               {mobileShopOpen ? 'Hide Shop' : 'Skill Shop'}
             </button>
-            <button className="pixel-button mobile-dock-button" onClick={() => openMobileSetup(mobileGatewayReady ? 1 : 0, 'manual')} type="button">
+            <button className="pixel-button mobile-dock-button" onClick={() => openMobileSetup(mobileGatewayReady ? 1 : 0)} type="button">
               <Globe size={16} />
               {mobileGatewayReady ? 'Gateway' : mobileDemoMode ? 'Setup' : 'Link Gate'}
             </button>
@@ -3635,8 +3500,8 @@ export default function App() {
                   <strong>I want to connect ClawQuest</strong>.
                 </p>
                 <p>
-                  That skill should show the official OpenClaw QR and setup code for the gateway. You can scan the QR,
-                  paste the setup code, or fall back to manual gateway details here.
+                  That helper can send the gateway URL and auth token to you over WhatsApp for easy copy and paste,
+                  then auto-approve the next Android pairing attempt once.
                 </p>
 
                 {mobileDemoMode ? (
@@ -3647,15 +3512,7 @@ export default function App() {
                 ) : null}
 
                 <div className="mobile-setup-paths">
-                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('scan')} type="button">
-                    <Search size={16} />
-                    Scan QR
-                  </button>
-                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('setup-code')} type="button">
-                    <Code2 size={16} />
-                    Paste Setup Code
-                  </button>
-                  <button className="pixel-button" onClick={() => handleSelectMobileSetupMode('manual')} type="button">
+                  <button className="pixel-button" onClick={() => setMobileSetupStep(1)} type="button">
                     <Globe size={16} />
                     Manual Setup
                   </button>
@@ -3664,17 +3521,10 @@ export default function App() {
                     Try Demo
                   </button>
                 </div>
-
-                {!mobileQrSetupAvailable ? (
-                  <p className="tool-note">
-                    This Android build cannot scan QR images directly yet, but pasted OpenClaw setup codes still work.
-                  </p>
-                ) : null}
-
                 <div className="mobile-setup-actions">
                   <button
                     className="pixel-button pixel-button-primary"
-                    onClick={() => handleSelectMobileSetupMode(mobileQrSetupAvailable ? 'scan' : 'setup-code')}
+                    onClick={() => setMobileSetupStep(1)}
                     type="button"
                   >
                     Start Setup
@@ -3686,122 +3536,55 @@ export default function App() {
               </div>
             ) : (
               <div className="mobile-setup-copy">
-                <span className="mobile-setup-kicker">
-                  {mobileSetupMode === 'scan'
-                    ? 'Scan QR'
-                    : mobileSetupMode === 'setup-code'
-                      ? 'Setup Code'
-                      : 'Gateway Link'}
-                </span>
-                <h2>
-                  {mobileSetupMode === 'scan'
-                    ? 'Scan the OpenClaw setup QR'
-                    : mobileSetupMode === 'setup-code'
-                      ? 'Paste the official OpenClaw setup code'
-                      : 'Where should this build phone home?'}
-                </h2>
+                <span className="mobile-setup-kicker">Gateway</span>
+                <h2>Enter your gateway details</h2>
 
-                {mobileSetupMode === 'scan' ? (
-                  <>
-                    <p>
-                      On your desktop OpenClaw host, install the <code>clawquest-connect</code> skill and tell
-                      OpenClaw:
-                      {' '}
-                      <strong>I want to connect ClawQuest</strong>.
-                    </p>
-                    <p>
-                      Then tap below to open your camera or photo picker and point it at the official OpenClaw QR.
-                    </p>
-                    <input
-                      accept="image/*"
-                      capture="environment"
-                      className="mobile-setup-file-input"
-                      onChange={(event) => void handleMobileSetupQrFileChange(event)}
-                      ref={mobileSetupFileInputRef}
-                      type="file"
-                    />
-                    <div className="mobile-setup-helper-box">
-                      <strong>What gets imported</strong>
-                      <span>The QR carries the gateway URL and a short-lived OpenClaw bootstrap token for pairing.</span>
-                    </div>
-                  </>
-                ) : null}
+                <p>
+                  Use the helper on your OpenClaw host if you want it to send the current gateway URL and auth token
+                  over WhatsApp, then auto-approve the next Android pairing attempt once.
+                </p>
 
-                {mobileSetupMode === 'setup-code' ? (
-                  <>
-                    <p>
-                      Paste the setup code that OpenClaw generated with the official <code>openclaw qr</code> flow.
-                    </p>
-                    <label className="pixel-field">
-                      <span>Setup code</span>
-                      <input
-                        onChange={(event) => {
-                          setMobileSetupError('')
-                          setMobileSetupCode(event.target.value)
-                        }}
-                        placeholder="Paste the OpenClaw setup code"
-                        type="text"
-                        value={mobileSetupCode}
-                      />
-                    </label>
-                    <p className="tool-note">
-                      The setup code already contains the gateway URL and a short-lived bootstrap token, so you do not
-                      need to type them by hand.
-                    </p>
-                  </>
-                ) : null}
+                <label className="pixel-field">
+                  <span>Gateway URL</span>
+                  <input
+                    onChange={(event) =>
+                      {
+                        setMobileSetupError('')
+                        setDraftConfig((current) => ({
+                          ...current,
+                          connectionMode: 'remote',
+                          gatewayUrl: event.target.value,
+                        }))
+                      }
+                    }
+                    placeholder="wss://your-gateway.example.com"
+                    type="text"
+                    value={draftConfig.gatewayUrl}
+                  />
+                </label>
 
-                {mobileSetupMode === 'manual' ? (
-                  <>
-                    <label className="pixel-field">
-                      <span>Gateway URL</span>
-                      <input
-                        onChange={(event) =>
-                          {
-                            setMobileSetupError('')
-                            setDraftConfig((current) => ({
-                              ...current,
-                              connectionMode: 'remote',
-                              gatewayUrl: event.target.value,
-                            }))
-                          }
-                        }
-                        placeholder="wss://your-gateway.example.com"
-                        type="text"
-                        value={draftConfig.gatewayUrl}
-                      />
-                    </label>
+                <label className="pixel-field">
+                  <span>Gateway token</span>
+                  <input
+                    onChange={(event) =>
+                      {
+                        setMobileSetupError('')
+                        setDraftConfig((current) => ({
+                          ...current,
+                          connectionMode: 'remote',
+                          gatewayToken: event.target.value,
+                        }))
+                      }
+                    }
+                    placeholder="Gateway token or password"
+                    type="password"
+                    value={draftConfig.gatewayToken}
+                  />
+                </label>
 
-                    <label className="pixel-field">
-                      <span>Gateway token</span>
-                      <input
-                        onChange={(event) =>
-                          {
-                            setMobileSetupError('')
-                            setDraftConfig((current) => ({
-                              ...current,
-                              connectionMode: 'remote',
-                              gatewayToken: event.target.value,
-                            }))
-                          }
-                        }
-                        placeholder="Optional token"
-                        type="password"
-                        value={draftConfig.gatewayToken}
-                      />
-                    </label>
-
-                    <p className="tool-note">
-                      This phone saves the gateway URL locally, but the current token stays in memory for this session
-                      only and is not written into device storage.
-                    </p>
-
-                    <p className="tool-note">
-                      The smooth path is still the <code>clawquest-connect</code> skill plus the official OpenClaw
-                      setup QR or setup code.
-                    </p>
-                  </>
-                ) : null}
+                <p className="tool-note">
+                  The gateway URL is saved on this phone. The current token stays in memory for this session only.
+                </p>
 
                 {mobileSetupError ? (
                   <div className="quest-error mobile-setup-error">
@@ -3814,57 +3597,16 @@ export default function App() {
                   <button className="pixel-button" onClick={() => setMobileSetupStep(0)} type="button">
                     Back
                   </button>
-                  {mobileSetupMode === 'scan' ? (
-                    <button
-                      className="pixel-button pixel-button-primary"
-                      disabled={mobileSetupScanning || mobileSetupWorking || !mobileQrSetupAvailable}
-                      onClick={handleOpenMobileSetupQrPicker}
-                      type="button"
-                    >
-                      {mobileSetupScanning || mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
-                      {mobileSetupScanning ? 'Scanning' : 'Open Camera'}
-                    </button>
-                  ) : null}
-                  {mobileSetupMode === 'setup-code' ? (
-                    <button
-                      className="pixel-button pixel-button-primary"
-                      disabled={mobileSetupWorking}
-                      onClick={() => void handleImportMobileSetupCode(
-                        mobileSetupCode,
-                        'Gateway linked from the OpenClaw setup code.',
-                      )}
-                      type="button"
-                    >
-                      {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Code2 size={16} />}
-                      {mobileSetupWorking ? 'Importing' : 'Import Setup'}
-                    </button>
-                  ) : null}
-                  {mobileSetupMode === 'manual' ? (
-                    <button
-                      className="pixel-button pixel-button-primary"
-                      disabled={mobileSetupWorking}
-                      onClick={() => void handleCompleteMobileSetup()}
-                      type="button"
-                    >
-                      {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Globe size={16} />}
-                      {mobileSetupWorking ? 'Linking' : 'Link Gateway'}
-                    </button>
-                  ) : null}
+                  <button
+                    className="pixel-button pixel-button-primary"
+                    disabled={mobileSetupWorking}
+                    onClick={() => void handleCompleteMobileSetup()}
+                    type="button"
+                  >
+                    {mobileSetupWorking ? <LoaderCircle className="spin" size={16} /> : <Globe size={16} />}
+                    {mobileSetupWorking ? 'Linking' : 'Link Gateway'}
+                  </button>
                 </div>
-
-                {mobileSetupMode !== 'setup-code' ? (
-                  <button className="pixel-button mobile-setup-secondary-button" onClick={() => handleSelectMobileSetupMode('setup-code')} type="button">
-                    <Code2 size={16} />
-                    Paste Setup Code Instead
-                  </button>
-                ) : null}
-
-                {mobileSetupMode !== 'manual' ? (
-                  <button className="pixel-button mobile-setup-secondary-button" onClick={() => handleSelectMobileSetupMode('manual')} type="button">
-                    <Globe size={16} />
-                    Use Manual Fields Instead
-                  </button>
-                ) : null}
               </div>
             )}
           </section>
@@ -4440,143 +4182,6 @@ function writeStoredConnectionSettings(draft: DraftConfig) {
       }),
     ),
   )
-}
-
-function getBarcodeDetectorConstructor(): BarcodeDetectorConstructor | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  const barcodeWindow = window as Window & {
-    BarcodeDetector?: BarcodeDetectorConstructor
-  }
-  return barcodeWindow.BarcodeDetector ?? null
-}
-
-function supportsMobileSetupQrScan() {
-  return getBarcodeDetectorConstructor() !== null && typeof createImageBitmap === 'function'
-}
-
-function decodeBase64UrlUtf8(value: string) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
-  const binary = window.atob(`${normalized}${padding}`)
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
-  return new TextDecoder().decode(bytes)
-}
-
-function tryDecodeOpenClawSetupCode(candidate: string): OpenClawSetupPayload | null {
-  const trimmed = candidate.trim()
-  if (!trimmed) {
-    return null
-  }
-
-  try {
-    const decoded = decodeBase64UrlUtf8(trimmed)
-    const parsed = JSON.parse(decoded) as {
-      bootstrapToken?: unknown
-      gatewayUrl?: unknown
-      url?: unknown
-    }
-    const gatewayUrl =
-      typeof parsed.url === 'string'
-        ? parsed.url.trim()
-        : typeof parsed.gatewayUrl === 'string'
-          ? parsed.gatewayUrl.trim()
-          : ''
-    const bootstrapToken = typeof parsed.bootstrapToken === 'string' ? parsed.bootstrapToken.trim() : ''
-    if (!gatewayUrl || !bootstrapToken) {
-      return null
-    }
-
-    const parsedGatewayUrl = new URL(gatewayUrl)
-    if (!['ws:', 'wss:', 'http:', 'https:'].includes(parsedGatewayUrl.protocol)) {
-      return null
-    }
-
-    return {
-      gatewayUrl: parsedGatewayUrl.toString(),
-      bootstrapToken,
-    }
-  } catch {
-    return null
-  }
-}
-
-function extractOpenClawSetupCode(rawValue: string) {
-  const trimmed = rawValue.trim()
-  if (!trimmed) {
-    return null
-  }
-
-  const direct = tryDecodeOpenClawSetupCode(trimmed)
-  if (direct) {
-    return {
-      code: trimmed,
-      payload: direct,
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as {
-      setupCode?: unknown
-    }
-    if (typeof parsed.setupCode === 'string' && parsed.setupCode.trim()) {
-      const nested = tryDecodeOpenClawSetupCode(parsed.setupCode)
-      if (nested) {
-        return {
-          code: parsed.setupCode.trim(),
-          payload: nested,
-        }
-      }
-    }
-  } catch {
-    // Ignore non-JSON setup-code input.
-  }
-
-  try {
-    const parsedUrl = new URL(trimmed)
-    for (const key of ['setupCode', 'code']) {
-      const value = parsedUrl.searchParams.get(key)
-      if (!value) {
-        continue
-      }
-
-      const nested = tryDecodeOpenClawSetupCode(value)
-      if (nested) {
-        return {
-          code: value.trim(),
-          payload: nested,
-        }
-      }
-    }
-  } catch {
-    // Ignore plain-text values that are not URLs.
-  }
-
-  const candidates = trimmed.match(/[A-Za-z0-9_-]{24,}/g) ?? []
-  for (const candidate of candidates) {
-    const nested = tryDecodeOpenClawSetupCode(candidate)
-    if (nested) {
-      return {
-        code: candidate.trim(),
-        payload: nested,
-      }
-    }
-  }
-
-  return null
-}
-
-function parseOpenClawSetupCode(rawValue: string): OpenClawSetupPayload {
-  const parsed = extractOpenClawSetupCode(rawValue)
-  if (!parsed) {
-    throw new Error(
-      'That does not look like a valid OpenClaw setup code. Ask OpenClaw to run `openclaw qr` and paste the setup code it prints.',
-    )
-  }
-
-  return parsed.payload
 }
 
 function isFeatureDemoMode() {
@@ -6287,12 +5892,20 @@ function formatAndroidGatewayConnectionErrorMessage(
 
   if (
     includesAny(normalized, [
+      'origin not allowed',
+      'allowedorigins',
+      'allowed origins',
+      'control ui',
       'handshake timeout',
       'closed before connect',
       'connect challenge timeout',
       'connect challenge missing nonce',
     ])
   ) {
+    if (includesAny(normalized, ['origin not allowed', 'allowedorigins', 'allowed origins', 'control ui'])) {
+      return `Claw Quest reached ${target}, but the gateway refused this connection because the request origin was not allowed. This usually means the gateway is applying Control UI origin rules to this route, or the tunnel/proxy is sending it through the wrong endpoint.`
+    }
+
     return `Claw Quest reached ${target}, but the gateway websocket handshake never finished. That usually means the gateway closed the connection before this phone completed connect, often because it was restarting, the tunnel/proxy interrupted the websocket, or device auth was rejected early.`
   }
 
