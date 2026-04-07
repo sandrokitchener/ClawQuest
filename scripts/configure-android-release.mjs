@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const repoRoot = process.cwd()
@@ -9,10 +9,6 @@ const gradleBuildPath = resolve(androidAppDir, 'build.gradle.kts')
 
 if (!existsSync(tauriConfigPath)) {
   throw new Error(`Missing Tauri config: ${tauriConfigPath}`)
-}
-
-if (!existsSync(tauriPropertiesPath)) {
-  throw new Error(`Missing generated Android tauri.properties: ${tauriPropertiesPath}`)
 }
 
 if (!existsSync(gradleBuildPath)) {
@@ -37,6 +33,7 @@ const nextProperties = [
   `tauri.android.versionCode=${versionCode}`,
   '',
 ].join('\n')
+mkdirSync(androidAppDir, { recursive: true })
 writeFileSync(tauriPropertiesPath, nextProperties)
 console.log(`Synced ${tauriPropertiesPath}`)
 
