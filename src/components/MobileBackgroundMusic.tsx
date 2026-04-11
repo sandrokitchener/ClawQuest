@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 const MOBILE_AUDIO_STORAGE_KEY = 'clawhub-mobile-background-music-muted-v1'
 const MOBILE_AUDIO_MEDIA_QUERY = '(max-width: 960px), (hover: none) and (pointer: coarse)'
 const MOBILE_AUDIO_URL = '/crpg-loop.wav'
-const MOBILE_AUDIO_VOLUME = 0.14
-const MOBILE_AUDIO_PLAYBACK_RATE = 0.92
+const MOBILE_AUDIO_VOLUME = 0.1
+const MOBILE_AUDIO_PLAYBACK_RATE = 1
 
 type PitchShiftableAudio = HTMLAudioElement & {
   mozPreservesPitch?: boolean
