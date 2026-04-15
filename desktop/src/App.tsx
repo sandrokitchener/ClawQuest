@@ -3,6 +3,7 @@ import {
   ArrowDownToLine,
   ChevronDown,
   ChevronRight,
+  Clock3,
   Code2,
   Construction,
   FolderOpen,
@@ -12,11 +13,13 @@ import {
   LoaderCircle,
   MessageCircle,
   RefreshCw,
+  ScrollText,
   Search,
   Shield,
   ShieldAlert,
   ShieldCheck,
   Skull,
+  Users,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -40,6 +43,7 @@ import {
   listenForQuestProgress,
   loadManagerState,
   normalizeCommandError,
+  loadOpenClawCronJobs,
   pollRemoteGatewaySessionUpdate,
   searchRegistrySkills,
   sendOpenClawPrompt,
@@ -50,6 +54,7 @@ import {
   type InstalledSkillSecurity,
   type ManagerConfig,
   type ManagerState,
+  type OpenClawCronJob,
   type OpenClawTarget,
   type QuestProgressEvent,
   type QuestSessionUpdate,
@@ -146,6 +151,19 @@ type MobileQuestActivity = {
   statusLabel: string
   runtimeMs?: number | null
   waitingForApproval: boolean
+}
+type PartyAdventurer = {
+  agentClass: AgentClass
+  agentRace: AgentRace
+  cadenceLabel: string
+  classLabel: string
+  dailyQuest: string
+  id: string
+  job: OpenClawCronJob
+  level: number
+  name: string
+  statusLabel: string
+  statusTone: Tone
 }
 type QuestVoicePack = {
   schemaVersion: number
@@ -390,6 +408,90 @@ const FEATURE_DEMO_CATALOG_SEEDS: DemoSkillSeed[] = [
     rating: 4.4,
     score: 81,
     updatedAt: Date.parse('2026-03-20T18:00:00Z'),
+  },
+]
+const FEATURE_DEMO_CRON_JOBS: OpenClawCronJob[] = [
+  {
+    id: 'dawn-watch',
+    agentId: 'main',
+    name: 'Dawn Watch',
+    description: 'Check the gateway, scan overnight runs, and post a morning readiness note.',
+    enabled: true,
+    createdAtMs: Date.parse('2026-04-01T08:10:00Z'),
+    updatedAtMs: Date.parse('2026-04-14T09:30:00Z'),
+    schedule: {
+      kind: 'cron',
+      expr: '0 7 * * *',
+      tz: 'America/Chicago',
+    },
+    payload: {
+      kind: 'agentTurn',
+      message: 'Inspect overnight gateway health, summarize failures, and flag anything that needs attention before standup.',
+    },
+    state: {
+      nextRunAtMs: Date.now() + 2 * 60 * 60 * 1000,
+      lastRunAtMs: Date.now() - 22 * 60 * 60 * 1000,
+      lastRunStatus: 'ok',
+      lastStatus: 'ok',
+      lastDurationMs: 34_000,
+      consecutiveErrors: 0,
+      lastDelivered: true,
+    },
+  },
+  {
+    id: 'market-ranger',
+    agentId: 'main',
+    name: 'Market Ranger',
+    description: 'Scout fresh skill listings, trend swings, and new releases worth equipping.',
+    enabled: true,
+    createdAtMs: Date.parse('2026-04-03T16:20:00Z'),
+    updatedAtMs: Date.parse('2026-04-14T14:00:00Z'),
+    schedule: {
+      kind: 'cron',
+      expr: '0 */6 * * *',
+      tz: 'America/Chicago',
+    },
+    payload: {
+      kind: 'agentTurn',
+      message: 'Browse the market for new skill releases and summarize the best additions for the party.',
+    },
+    state: {
+      nextRunAtMs: Date.now() + 50 * 60 * 1000,
+      lastRunAtMs: Date.now() - 5 * 60 * 60 * 1000,
+      lastRunStatus: 'ok',
+      lastStatus: 'ok',
+      lastDurationMs: 51_000,
+      consecutiveErrors: 0,
+      lastDelivered: true,
+      runningAtMs: Date.now() - 4 * 60 * 1000,
+    },
+  },
+  {
+    id: 'ledger-rogue',
+    agentId: 'main',
+    name: 'Ledger Rogue',
+    description: 'Sweep old reports, delivery misses, and suspicious errors before they pile up.',
+    enabled: false,
+    createdAtMs: Date.parse('2026-04-04T18:05:00Z'),
+    updatedAtMs: Date.parse('2026-04-12T12:40:00Z'),
+    schedule: {
+      kind: 'cron',
+      expr: '30 18 * * 5',
+      tz: 'America/Chicago',
+    },
+    payload: {
+      kind: 'agentTurn',
+      message: 'Review stale report files, summarize anything missing, and note delivery failures.',
+    },
+    state: {
+      nextRunAtMs: Date.now() + 3 * 24 * 60 * 60 * 1000,
+      lastRunAtMs: Date.now() - 4 * 24 * 60 * 60 * 1000,
+      lastRunStatus: 'error',
+      lastStatus: 'paused',
+      lastDurationMs: 18_000,
+      consecutiveErrors: 2,
+      lastDelivered: false,
+    },
   },
 ]
 
@@ -805,9 +907,11 @@ export default function App() {
   const [error, setError] = useState('')
   const [catalogIssue, setCatalogIssue] = useState('')
   const [catalogCooldownUntil, setCatalogCooldownUntil] = useState<number | null>(null)
+  const [cronJobs, setCronJobs] = useState<OpenClawCronJob[]>([])
   const [booted, setBooted] = useState(false)
   const [loadingState, setLoadingState] = useState(true)
   const [loadingCatalog, setLoadingCatalog] = useState(true)
+  const [loadingParty, setLoadingParty] = useState(true)
   const [workingSlug, setWorkingSlug] = useState<string | null>(null)
   const [removingPath, setRemovingPath] = useState<string | null>(null)
   const [dragPayload, setDragPayload] = useState<DragPayload>(null)
@@ -826,6 +930,7 @@ export default function App() {
   const [mobileDemoMode, setMobileDemoMode] = useState(() => readMobileDemoMode())
   const [mobileShopOpen, setMobileShopOpen] = useState(false)
   const [desktopShopOpen, setDesktopShopOpen] = useState(false)
+  const [partyOpen, setPartyOpen] = useState(false)
   const [mobileSetupOpen, setMobileSetupOpen] = useState(() => {
     const initialDraft = mergeStoredConnectionSettings(EMPTY_DRAFT)
     return !hasGatewayWizardConfig(initialDraft) && !readMobileDemoMode()
@@ -834,6 +939,7 @@ export default function App() {
   const [mobileSetupDismissed, setMobileSetupDismissed] = useState(false)
   const [mobileSetupError, setMobileSetupError] = useState('')
   const [mobileSetupWorking, setMobileSetupWorking] = useState(false)
+  const [partyError, setPartyError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [questDraft, setQuestDraft] = useState('')
   const [questBubble, setQuestBubble] = useState('Send me on a quest!')
@@ -922,11 +1028,24 @@ export default function App() {
   const gearLoadout = resolveGearLoadout(state.installed, slotPreferences)
   const equippedCount = SLOT_ORDER.filter((slot) => gearLoadout.bySlot[slot]).length
   const progress = deriveAdventurerProgress(questsCompleted)
+  const partyMembers = buildPartyAdventurers(cronJobs, {
+    agentClass: displayedAgentClass,
+    agentRace: displayedAgentRace,
+  })
+  const activePartyCount = partyMembers.filter((member) => member.job.enabled).length
+  const questingPartyCount = partyMembers.filter((member) => member.job.state?.runningAtMs).length
+  const troubledPartyCount = partyMembers.filter((member) => member.statusTone === 'danger').length
   const installedKey = state.installed
     .map((skill) => `${skill.slug}:${skill.path}`)
     .sort()
     .join('|')
-  const busy = loadingState || loadingCatalog || Boolean(workingSlug) || Boolean(removingPath) || questBusy
+  const busy =
+    loadingState ||
+    loadingCatalog ||
+    loadingParty ||
+    Boolean(workingSlug) ||
+    Boolean(removingPath) ||
+    questBusy
   const avatarMotion: AvatarMotion = questBusy ? 'walking' : avatarSpeaking ? 'talking' : 'idle'
   const noticeLines = notice
     .split(/\r?\n/)
@@ -943,7 +1062,7 @@ export default function App() {
 
     void (async () => {
       try {
-        await refreshState(undefined)
+        await Promise.all([refreshState(undefined), refreshPartyRoster()])
       } finally {
         setBooted(true)
       }
@@ -1677,6 +1796,27 @@ export default function App() {
     })
   }
 
+  async function refreshPartyRoster() {
+    setLoadingParty(true)
+
+    try {
+      if (previewOnlyMode) {
+        setCronJobs(featureDemoMode || mobileDemoModeRef.current ? FEATURE_DEMO_CRON_JOBS : [])
+        setPartyError('')
+        return
+      }
+
+      const nextJobs = await loadOpenClawCronJobs()
+      setCronJobs(nextJobs)
+      setPartyError('')
+    } catch (caughtError) {
+      setCronJobs([])
+      setPartyError(normalizeCommandError(caughtError))
+    } finally {
+      setLoadingParty(false)
+    }
+  }
+
   async function refreshState(nextConfig?: ManagerConfig): Promise<RefreshStateResult> {
     setLoadingState(true)
     setError('')
@@ -1828,7 +1968,7 @@ export default function App() {
       }
     }
 
-    const { state: nextState } = await refreshState(nextConfig)
+    const [{ state: nextState }] = await Promise.all([refreshState(nextConfig), refreshPartyRoster()])
     await refreshCatalog(nextConfig, searchText, sort, { force: true })
 
     if (nextState) {
@@ -2715,6 +2855,22 @@ export default function App() {
       </button>
 
       <button
+        aria-expanded={partyOpen}
+        className={`pixel-button desktop-shop-launcher ${partyOpen ? 'desktop-shop-launcher-primary desktop-shop-launcher-active' : ''}`}
+        onClick={() => {
+          playUiSound('blip')
+          setPartyOpen((current) => !current)
+        }}
+        type="button"
+      >
+        <Users size={18} />
+        <span className="desktop-shop-launcher-copy">Manage Party</span>
+        <span className="mini-chip desktop-shop-launcher-count">
+          {loadingParty ? <LoaderCircle className="spin" size={12} /> : cronJobs.length}
+        </span>
+      </button>
+
+      <button
         className="pixel-button desktop-shop-launcher desktop-shop-launcher-disabled"
         disabled
         type="button"
@@ -2723,6 +2879,18 @@ export default function App() {
         <span className="desktop-shop-launcher-copy">Potion Shop</span>
       </button>
     </div>
+  ) : null
+
+  const partyPanel = partyOpen || isMobileShell ? (
+    <PartyRosterPanel
+      activeCount={activePartyCount}
+      error={partyError}
+      jobs={partyMembers}
+      loading={loadingParty}
+      open={partyOpen}
+      questingCount={questingPartyCount}
+      troubleCount={troubledPartyCount}
+    />
   ) : null
 
   return (
@@ -3041,8 +3209,9 @@ export default function App() {
 
               <div className="portrait-details">
                 {desktopShopLaunchers}
+                {partyPanel}
 
-	                <div className={`class-card ${classTheme.cardClass}`}>
+                <div className={`class-card ${classTheme.cardClass}`}>
                   <div className="class-card-topline">
                     <span className="class-card-kicker">Adventurer</span>
                     <span className="mini-chip class-level-chip">Lv. {progress.level}</span>
@@ -3080,19 +3249,19 @@ export default function App() {
                       />
                     </div>
                   </div>
-	                  <span className="class-card-summary">{classTheme.summary}</span>
-	                </div>
+                  <span className="class-card-summary">{classTheme.summary}</span>
+                </div>
 
                 {isMobileShell ? (
                   <div className={`mobile-prototype-note ${mobileGatewayReady ? 'mobile-prototype-note-linked' : ''}`}>
                     <Globe size={16} />
-	                    <div>
-	                      <strong>{mobileGatewayReady ? 'Gateway linked' : 'Gateway setup pending'}</strong>
-	                      <span>
-	                        {liveMobileRemoteQuests
-	                          ? 'Mobile quests and loadout now come from the linked OpenClaw gateway. Tap Equip in the shop to add skills from the phone.'
-	                          : 'Browse the guild ledger below. Link a live OpenClaw gateway to pull in your real loadout.'}
-	                      </span>
+                    <div>
+                      <strong>{mobileGatewayReady ? 'Gateway linked' : 'Gateway setup pending'}</strong>
+                      <span>
+                        {liveMobileRemoteQuests
+                          ? 'Mobile quests and loadout now come from the linked OpenClaw gateway. Tap Equip in the shop to add skills from the phone.'
+                          : 'Browse the guild ledger below. Link a live OpenClaw gateway to pull in your real loadout.'}
+                      </span>
                     </div>
                   </div>
                 ) : null}
@@ -3698,6 +3867,134 @@ function EmptyState({
       <strong>{title}</strong>
       <span>{text}</span>
     </div>
+  )
+}
+
+function PartyRosterPanel({
+  activeCount,
+  error,
+  jobs,
+  loading,
+  open,
+  questingCount,
+  troubleCount,
+}: {
+  activeCount: number
+  error: string
+  jobs: PartyAdventurer[]
+  loading: boolean
+  open: boolean
+  questingCount: number
+  troubleCount: number
+}) {
+  return (
+    <section className={`party-panel ${open ? 'party-panel-open' : ''}`}>
+      <div className="party-panel-head">
+        <div>
+          <div className="party-panel-title">
+            <Users size={18} />
+            <h2>Manage Party</h2>
+          </div>
+          <p>OpenClaw cron jobs show up here as adventurers with recurring quests.</p>
+        </div>
+        <div className="party-panel-summary">
+          <span className="mini-chip">{jobs.length} total</span>
+          <span className="mini-chip">{activeCount} active</span>
+          <span className={`mini-chip ${questingCount > 0 ? 'mini-chip-warning' : ''}`}>
+            {questingCount} questing
+          </span>
+          <span className={`mini-chip ${troubleCount > 0 ? 'mini-chip-danger' : ''}`}>
+            {troubleCount} trouble
+          </span>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="quest-error">
+          <AlertTriangle size={16} />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
+      {loading ? (
+        <EmptyState
+          icon={<LoaderCircle className="spin" size={22} />}
+          text="Checking the OpenClaw party roster."
+          title="Summoning adventurers"
+        />
+      ) : jobs.length === 0 ? (
+        <EmptyState
+          icon={<Users size={22} />}
+          text="Create an OpenClaw cron job and refresh. It will appear here as a new adventurer."
+          title="No party members yet"
+        />
+      ) : (
+        <div className="party-grid">
+          {jobs.map((member) => {
+            const running = Boolean(member.job.state?.runningAtMs)
+            const scheduleTone =
+              member.statusTone === 'danger'
+                ? 'danger'
+                : running
+                  ? 'warning'
+                  : member.job.enabled
+                    ? 'clean'
+                    : 'neutral'
+
+            return (
+              <article className={`party-card party-card-${member.statusTone}`} key={member.id}>
+                <div className="party-card-avatar">
+                  <PixelAvatar
+                    agentClass={member.agentClass}
+                    agentRace={member.agentRace}
+                    motion={running ? 'walking' : 'idle'}
+                  />
+                </div>
+
+                <div className="party-card-body">
+                  <div className="party-card-head">
+                    <div>
+                      <strong>{member.name}</strong>
+                      <span>{member.classLabel}</span>
+                    </div>
+                    <div className="party-card-badges">
+                      <span className="mini-chip class-level-chip">Lv. {member.level}</span>
+                      <StatusChip tone={member.statusTone}>{member.statusLabel}</StatusChip>
+                    </div>
+                  </div>
+
+                  <div className="party-card-meta">
+                    <span className="mini-chip">{member.job.enabled ? 'Enabled' : 'Paused'}</span>
+                    <span className={`mini-chip mini-chip-${scheduleTone}`}>{member.cadenceLabel}</span>
+                    {member.job.schedule?.tz ? <span className="mini-chip">{member.job.schedule.tz}</span> : null}
+                  </div>
+
+                  <div className="party-card-quest">
+                    <span>Daily Quest</span>
+                    <p>{member.dailyQuest}</p>
+                  </div>
+
+                  <div className="party-card-timeline">
+                    <div className="party-card-timeline-row">
+                      <Clock3 size={14} />
+                      <span>
+                        Next run: {formatPartyTimestamp(member.job.state?.nextRunAtMs)}
+                      </span>
+                    </div>
+                    <div className="party-card-timeline-row">
+                      <ScrollText size={14} />
+                      <span>
+                        Last report: {formatPartyRunSummary(member.job)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -4840,6 +5137,274 @@ function deriveAdventurerProgress(questsCompleted: number): AdventurerProgress {
     remainingToNextLevel: level >= 99 ? 0 : Math.max(0, questsForNextLevel - questsIntoLevel),
     isMaxLevel: level >= 99,
   }
+}
+
+function buildPartyAdventurers(
+  jobs: OpenClawCronJob[],
+  reservedCombo: { agentClass: AgentClass; agentRace: AgentRace },
+): PartyAdventurer[] {
+  const sortedJobs = [...jobs].sort((left, right) => compareCronJobsForDisplay(left, right))
+  const allCombos = buildPartyComboPool(reservedCombo)
+  const usedCombos = new Set<string>()
+
+  return sortedJobs.map((job, index) => {
+    const preferredClass = deriveCronJobClass(job)
+    const preferredRace = deriveCronJobRace(job)
+    const preferredKey = partyComboKey({ agentClass: preferredClass, agentRace: preferredRace })
+    const preferredIndex = allCombos.findIndex((combo) => partyComboKey(combo) === preferredKey)
+    const startIndex = preferredIndex >= 0 ? preferredIndex : hashQuestVoiceSeed(job.id) % Math.max(allCombos.length, 1)
+    const combo = pickUniquePartyCombo(allCombos, usedCombos, startIndex, index)
+    usedCombos.add(partyComboKey(combo))
+
+    return {
+      agentClass: combo.agentClass,
+      agentRace: combo.agentRace,
+      cadenceLabel: formatCronCadence(job.schedule),
+      classLabel: `${RACE_LABELS[combo.agentRace]} ${CLASS_THEMES[combo.agentClass].label}`,
+      dailyQuest: summarizeCronQuest(job),
+      id: job.id,
+      job,
+      level: Math.max(0, job.runCount ?? 0),
+      name: job.name?.trim() || 'Unnamed adventurer',
+      statusLabel: formatCronJobStatus(job),
+      statusTone: toneForCronJob(job),
+    }
+  })
+}
+
+function buildPartyComboPool(reservedCombo: { agentClass: AgentClass; agentRace: AgentRace }) {
+  const classes: AgentClass[] = ['cleric', 'ranger', 'rogue', 'paladin']
+  const combos = classes.flatMap((agentClass) =>
+    AGENT_RACE_OPTIONS.map((agentRace) => ({
+      agentClass,
+      agentRace,
+    })),
+  )
+
+  const reservedKey = partyComboKey(reservedCombo)
+  return combos.filter((combo) => partyComboKey(combo) !== reservedKey)
+}
+
+function pickUniquePartyCombo(
+  combos: Array<{ agentClass: AgentClass; agentRace: AgentRace }>,
+  used: Set<string>,
+  startIndex: number,
+  fallbackSeed: number,
+) {
+  if (combos.length === 0) {
+    return { agentClass: 'ranger' as AgentClass, agentRace: 'human' as AgentRace }
+  }
+
+  for (let offset = 0; offset < combos.length; offset += 1) {
+    const combo = combos[(startIndex + offset) % combos.length] ?? combos[0]
+    if (combo && !used.has(partyComboKey(combo))) {
+      return combo
+    }
+  }
+
+  return combos[fallbackSeed % combos.length] ?? combos[0] ?? { agentClass: 'ranger', agentRace: 'human' }
+}
+
+function partyComboKey(combo: { agentClass: AgentClass; agentRace: AgentRace }) {
+  return `${combo.agentClass}:${combo.agentRace}`
+}
+
+function compareCronJobsForDisplay(left: OpenClawCronJob, right: OpenClawCronJob) {
+  const leftRunning = left.state?.runningAtMs ?? 0
+  const rightRunning = right.state?.runningAtMs ?? 0
+  if (leftRunning !== rightRunning) {
+    return rightRunning - leftRunning
+  }
+
+  if (left.enabled !== right.enabled) {
+    return left.enabled ? -1 : 1
+  }
+
+  const leftNext = left.state?.nextRunAtMs ?? Number.MAX_SAFE_INTEGER
+  const rightNext = right.state?.nextRunAtMs ?? Number.MAX_SAFE_INTEGER
+  if (leftNext !== rightNext) {
+    return leftNext - rightNext
+  }
+
+  return (left.name ?? left.id).localeCompare(right.name ?? right.id)
+}
+
+function deriveCronJobClass(job: OpenClawCronJob): AgentClass {
+  const source = cronJobText(job).toLowerCase()
+  const paladinKeywords = [
+    ...AUTH_ERROR_KEYWORDS,
+    'alert',
+    'guard',
+    'health',
+    'monitor',
+    'security',
+    'watch',
+  ]
+  const rogueKeywords = ['backup', 'cleanup', 'deliver', 'delivery', 'digest', 'report', 'sweep']
+  const scores: Array<[AgentClass, number]> = [
+    ['cleric', keywordScore(source, [...DEV_KEYWORDS, ...FORGE_ERROR_KEYWORDS])],
+    ['ranger', keywordScore(source, RANGER_KEYWORDS)],
+    ['paladin', keywordScore(source, paladinKeywords)],
+    ['rogue', keywordScore(source, rogueKeywords)],
+  ]
+
+  const sorted = [...scores].sort((left, right) => right[1] - left[1])
+  if ((sorted[0]?.[1] ?? 0) > 0) {
+    return sorted[0]?.[0] ?? 'ranger'
+  }
+
+  const classes: AgentClass[] = ['cleric', 'ranger', 'rogue', 'paladin']
+  return classes[hashQuestVoiceSeed(job.id) % classes.length] ?? 'ranger'
+}
+
+function deriveCronJobRace(job: OpenClawCronJob): AgentRace {
+  return AGENT_RACE_OPTIONS[hashQuestVoiceSeed(`${job.id}:${job.name ?? ''}`) % AGENT_RACE_OPTIONS.length] ?? 'human'
+}
+
+function cronJobText(job: OpenClawCronJob) {
+  return [job.name, job.description, job.payload?.message].filter(Boolean).join(' ')
+}
+
+function summarizeCronQuest(job: OpenClawCronJob) {
+  const source =
+    job.description?.trim() ||
+    job.payload?.message?.trim() ||
+    job.name?.trim() ||
+    'Await orders from the guild.'
+  return summarizeQuestTextForLog(source, 168)
+}
+
+function toneForCronJob(job: OpenClawCronJob): Tone {
+  if (job.state?.consecutiveErrors && job.state.consecutiveErrors > 0) {
+    return 'danger'
+  }
+
+  const status = (job.state?.lastStatus ?? job.state?.lastRunStatus ?? '').trim().toLowerCase()
+  if (['error', 'failed', 'failure'].includes(status)) {
+    return 'danger'
+  }
+
+  if (job.state?.runningAtMs) {
+    return 'warning'
+  }
+
+  if (!job.enabled) {
+    return 'neutral'
+  }
+
+  if (['ok', 'success', 'completed'].includes(status)) {
+    return 'clean'
+  }
+
+  return 'neutral'
+}
+
+function formatCronJobStatus(job: OpenClawCronJob) {
+  if (job.state?.runningAtMs) {
+    return 'Questing now'
+  }
+
+  if (!job.enabled) {
+    return 'At camp'
+  }
+
+  if (job.state?.consecutiveErrors && job.state.consecutiveErrors > 0) {
+    return `${job.state.consecutiveErrors} failed run${job.state.consecutiveErrors === 1 ? '' : 's'}`
+  }
+
+  const status = (job.state?.lastStatus ?? job.state?.lastRunStatus ?? '').trim().toLowerCase()
+  if (status === 'ok' || status === 'success' || status === 'completed') {
+    return 'Ready for next quest'
+  }
+
+  if (status === 'paused') {
+    return 'Paused'
+  }
+
+  return 'Awaiting orders'
+}
+
+function formatCronCadence(schedule: OpenClawCronJob['schedule']) {
+  if (!schedule) {
+    return 'No schedule'
+  }
+
+  if (schedule.kind === 'cron') {
+    return schedule.expr ? `Cron ${schedule.expr}` : 'Cron schedule'
+  }
+
+  const intervalMs = schedule.intervalMs ?? schedule.everyMs ?? null
+  if (intervalMs) {
+    return `Every ${formatCronDuration(intervalMs)}`
+  }
+
+  if (schedule.kind?.trim()) {
+    return schedule.kind
+  }
+
+  return 'Scheduled'
+}
+
+function formatCronDuration(durationMs: number) {
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000))
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`
+  }
+
+  const totalMinutes = Math.max(1, Math.round(durationMs / 60_000))
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`
+  }
+
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours < 24) {
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
+  }
+
+  const days = Math.floor(hours / 24)
+  const remainderHours = hours % 24
+  return remainderHours === 0 ? `${days}d` : `${days}d ${remainderHours}h`
+}
+
+function formatPartyTimestamp(timestamp?: number | null) {
+  if (!timestamp) {
+    return 'Unscheduled'
+  }
+
+  return new Date(timestamp).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function formatPartyRunSummary(job: OpenClawCronJob) {
+  if (job.state?.runningAtMs) {
+    return `Started ${formatPartyTimestamp(job.state.runningAtMs)}`
+  }
+
+  const parts: string[] = []
+  if (job.state?.lastRunStatus?.trim()) {
+    parts.push(job.state.lastRunStatus)
+  } else if (job.state?.lastStatus?.trim()) {
+    parts.push(job.state.lastStatus)
+  }
+
+  if (job.state?.lastRunAtMs) {
+    parts.push(formatPartyTimestamp(job.state.lastRunAtMs))
+  }
+
+  if (job.state?.lastDurationMs) {
+    parts.push(formatCronDuration(job.state.lastDurationMs))
+  }
+
+  if (parts.length === 0) {
+    return 'No run history yet'
+  }
+
+  return parts.join(' / ')
 }
 
 function formatReasonCode(code: string) {

@@ -73,6 +73,57 @@ export type InstalledSkill = {
   security: InstalledSkillSecurity
 }
 
+export type OpenClawCronJobSchedule = {
+  kind?: string | null
+  expr?: string | null
+  tz?: string | null
+  intervalMs?: number | null
+  everyMs?: number | null
+  hourUtc?: number | null
+  minuteUtc?: number | null
+}
+
+export type OpenClawCronJobPayload = {
+  kind?: string | null
+  message?: string | null
+}
+
+export type OpenClawCronJobDelivery = {
+  mode?: string | null
+  channel?: string | null
+  to?: string | null
+}
+
+export type OpenClawCronJobState = {
+  nextRunAtMs?: number | null
+  lastRunAtMs?: number | null
+  lastRunStatus?: string | null
+  lastStatus?: string | null
+  lastDurationMs?: number | null
+  lastDeliveryStatus?: string | null
+  consecutiveErrors?: number | null
+  lastDelivered?: boolean | null
+  runningAtMs?: number | null
+}
+
+export type OpenClawCronJob = {
+  id: string
+  agentId?: string | null
+  sessionKey?: string | null
+  name?: string | null
+  description?: string | null
+  enabled: boolean
+  createdAtMs?: number | null
+  updatedAtMs?: number | null
+  sessionTarget?: string | null
+  wakeMode?: string | null
+  schedule?: OpenClawCronJobSchedule | null
+  payload?: OpenClawCronJobPayload | null
+  delivery?: OpenClawCronJobDelivery | null
+  state?: OpenClawCronJobState | null
+  runCount?: number | null
+}
+
 export type ManagerState = {
   agentName?: string | null
   resolvedWorkdir: string
@@ -166,6 +217,10 @@ export function normalizeCommandError(error: unknown) {
 
 export async function loadManagerState(config?: ManagerConfig) {
   return invoke<ManagerState>('load_manager_state', { config })
+}
+
+export async function loadOpenClawCronJobs() {
+  return invoke<OpenClawCronJob[]>('load_openclaw_cron_jobs')
 }
 
 export async function browseRegistrySkills(config: ManagerConfig | undefined, sort: BrowseSort) {

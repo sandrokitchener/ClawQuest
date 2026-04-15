@@ -152,6 +152,73 @@ pub struct InstalledSkill {
   pub security: InstalledSkillSecurity,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawCronJobSchedule {
+  pub kind: Option<String>,
+  pub expr: Option<String>,
+  pub tz: Option<String>,
+  pub interval_ms: Option<u64>,
+  pub every_ms: Option<u64>,
+  pub hour_utc: Option<u32>,
+  pub minute_utc: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawCronJobPayload {
+  pub kind: Option<String>,
+  pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawCronJobDelivery {
+  pub mode: Option<String>,
+  pub channel: Option<String>,
+  pub to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawCronJobState {
+  pub next_run_at_ms: Option<i64>,
+  pub last_run_at_ms: Option<i64>,
+  pub last_run_status: Option<String>,
+  pub last_status: Option<String>,
+  pub last_duration_ms: Option<u64>,
+  pub last_delivery_status: Option<String>,
+  pub consecutive_errors: Option<u32>,
+  pub last_delivered: Option<bool>,
+  pub running_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawCronJob {
+  pub id: String,
+  pub agent_id: Option<String>,
+  pub session_key: Option<String>,
+  pub name: Option<String>,
+  pub description: Option<String>,
+  pub enabled: bool,
+  pub created_at_ms: Option<i64>,
+  pub updated_at_ms: Option<i64>,
+  pub session_target: Option<String>,
+  pub wake_mode: Option<String>,
+  pub schedule: Option<OpenClawCronJobSchedule>,
+  pub payload: Option<OpenClawCronJobPayload>,
+  pub delivery: Option<OpenClawCronJobDelivery>,
+  pub state: Option<OpenClawCronJobState>,
+  pub run_count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OpenClawCronJobsFile {
+  jobs: Vec<OpenClawCronJob>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagerState {
@@ -601,6 +668,48 @@ struct ModerationDetail {
 pub async fn load_manager_state(config: Option<ManagerConfig>) -> Result<ManagerState, String> {
   let resolved = resolve_manager_config(config)?;
   build_manager_state(&resolved).await
+}
+
+#[tauri::command]
+pub async fn load_openclaw_cron_jobs() -> Result<Vec<OpenClawCronJob>, String> {
+  let jobs_path = openclaw_state_dir().join("cron").join("jobs.json");
+  if !jobs_path.exists() {
+    return Ok(vec![]);
+  }
+
+  let Some(file) = read_json5_file::<OpenClawCronJobsFile>(&jobs_path) else {
+    return Err(format!(
+      "Could not read OpenClaw cron jobs from {}.",
+      jobs_path.display()
+    ));
+  };
+
+  let runs_dir = openclaw_state_dir().join("cron").join("runs");
+  let jobs = file
+    .jobs
+    .into_iter()
+    .map(|mut job| {
+      job.run_count = Some(count_cron_job_runs(&runs_dir, &job.id));
+      job
+    })
+    .collect();
+
+  Ok(jobs)
+}
+
+fn count_cron_job_runs(runs_dir: &Path, job_id: &str) -> u32 {
+  let run_log = runs_dir.join(format!("{job_id}.jsonl"));
+  let Ok(raw) = fs::read_to_string(run_log) else {
+    return 0;
+  };
+
+  raw
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .count()
+    .try_into()
+    .unwrap_or(u32::MAX)
 }
 
 #[tauri::command]
