@@ -28,6 +28,7 @@ Claw Quest currently ships as:
 The current build focuses on a smoother OpenClaw experience:
 
 - browse and equip skills from a merchant-style skill shop
+- monitor OpenClaw cron jobs from `Manage Party`, where each recurring task becomes its own adventurer
 - view your live loadout from the connected OpenClaw instance
 - send quest prompts to your OpenClaw agent
 - see quest progress and delayed follow-up completions on Android
@@ -38,6 +39,10 @@ The current build focuses on a smoother OpenClaw experience:
 
 ## Current highlights
 
+- New in this release: `Manage Party` turns OpenClaw cron jobs into a living party roster
+- Each cron task gets a unique adventurer avatar instead of reusing the main hero
+- Each party member level is the number of times that cron job has actually executed
+- Party cards show daily quest summary, next run, and latest report status
 - Android now supports remote Gateway pairing and live quest dispatch
 - Android skill loadout reads from the connected OpenClaw host
 - Mobile skill cards are optimized for a denser two-column shop layout
@@ -187,6 +192,7 @@ git push origin mobile-vX.Y.Z
 
 - `desktop-v*` publishes Windows installers
 - `mobile-v*` publishes Android APK prereleases
+- Current release highlight: `Manage Party` surfaces OpenClaw cron jobs as unique adventurers with real run-count levels on both desktop and Android
 
 Built artifacts should be distributed through GitHub Releases rather than committed into the repo.
 
